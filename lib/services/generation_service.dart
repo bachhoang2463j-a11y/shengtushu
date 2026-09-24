@@ -185,6 +185,31 @@ class GenerationService extends ChangeNotifier {
     final db = _requireDb();
     final paras = chapter.content.split('\n');
     final hash = _hash(paras[globalIdx]);
+    // 去重：同章同段同位置（±10 字符）已有占位符 → 复用并更新提示词，防止重复生图
+    final existing = await (db.select(db.illustrations)
+          ..where((t) => t.chapterId.equals(chapter.id))
+          ..where((t) => t.afterParagraph.equals(globalIdx)))
+        .get();
+    for (final e in existing) {
+      final sameSpot = (e.anchorOffset < 0 && anchorOffset < 0) ||
+          (e.anchorOffset >= 0 &&
+              anchorOffset >= 0 &&
+              (e.anchorOffset - anchorOffset).abs() <= 10);
+      if (sameSpot) {
+        debugPrint('[生图] 第 ${globalIdx + 1} 段已有占位符 #${e.id}，复用并更新提示词');
+        await (db.update(db.illustrations)..where((t) => t.id.equals(e.id))).write(
+          IllustrationsCompanion(
+            prompt: Value(prompt),
+            status: const Value('pending'),
+            error: const Value(''),
+          ),
+        );
+        _ensureQueued(e.id, promptPreview: _preview(prompt));
+        notifyListeners();
+        if (!_running) _drain();
+        return e.id;
+      }
+    }
     final id = await db.into(db.illustrations).insert(IllustrationsCompanion.insert(
       bookId: book.id,
       chapterId: chapter.id,

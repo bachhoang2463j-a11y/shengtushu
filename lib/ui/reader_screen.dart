@@ -6,9 +6,9 @@ import 'package:flutter/material.dart';
 
 import '../data/database.dart';
 import '../reader/paginator.dart';
+import '../services/chapter_editor.dart';
 import '../services/generation_service.dart';
 import '../services/settings_service.dart';
-import 'edit_screen.dart';
 import 'image_viewer_screen.dart';
 import 'settings_screen.dart';
 import 'theme_ext.dart';
@@ -376,6 +376,33 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  /// 选区编辑：选中哪段改哪段，保存后精确替换回选区并重定位插图
+  Future<void> _editSelection(SelectableRegionState selectableRegionState) async {
+    final ch = _chapter;
+    if (ch == null) return;
+    final sel = _selectionText.trim();
+    final paras = ch.content.split('\n');
+    final hint = _currentAnchorParagraph();
+    final (sP, sO) = ChapterEditor.locateSelectionStart(paras, sel, hintParagraph: hint);
+    final (eP, eO) = GenerationService.locateSelectionEnd(paras, sel, hintParagraph: hint);
+    selectableRegionState.hideToolbar();
+    selectableRegionState.clearSelection();
+    if (sP < 0 || eP < 0 || (eP == sP && eO <= sO)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('无法定位选区，请重新选择')));
+      }
+      return;
+    }
+    final edited = await textInputDialog(context, title: '编辑选中文字', initial: sel, maxLines: 12);
+    if (edited == null || edited.trim().isEmpty || edited == sel.trim()) return;
+    await ChapterEditor.replaceSelection(widget.db, ch,
+        startPara: sP, startOffset: sO, endPara: eP, endOffset: eO, editedText: edited);
+    await _loadChapter();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已保存，插图锚点已重定位')));
+    }
+  }
+
   void _showChapterDrawer() {
     showModalBottomSheet(
       context: context,
@@ -600,6 +627,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 label: const Text('生图'),
               ),
               TextButton.icon(
+                onPressed: () => _editSelection(selectableRegionState),
+                icon: const Icon(Icons.edit_outlined, size: 18),
+                label: const Text('编辑'),
+              ),
+              TextButton.icon(
                 onPressed: () {
                   // ignore: deprecated_member_use
                   selectableRegionState.copySelection(SelectionChangedCause.toolbar);
@@ -657,26 +689,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2)),
                 ),
             ]),
-          ),
-          IconButton(
-            tooltip: '编辑本页',
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: () async {
-              final c = _chapter;
-              if (c == null || _pages.isEmpty || _curPage >= _pages.length) return;
-              final idxs = _pages[_curPage].blocks
-                  .whereType<TextBlock>()
-                  .map((b) => b.paragraphIndex)
-                  .toList()
-                ..sort();
-              if (idxs.isEmpty) return;
-              final start = idxs.first;
-              final end = idxs.last;
-              await Navigator.push(context, MaterialPageRoute(
-                  builder: (_) => EditScreen(
-                      db: widget.db, chapter: c, startParagraph: start, endParagraph: end)));
-              await _loadChapter();
-            },
           ),
           IconButton(
             tooltip: '设置',

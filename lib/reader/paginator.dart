@@ -87,6 +87,7 @@ class Paginator {
     var current = <PageBlock>[];
     var used = 0.0;
     var sinceYield = 0;
+    var yieldedCount = 0; // 已产出的页数（每次只产出增量，严禁全量快照）
 
     void newPage() {
       if (current.isNotEmpty) pages.add(current);
@@ -168,14 +169,16 @@ class Paginator {
       if (sinceYield >= chunkSize) {
         sinceYield = 0;
         await Future<void>.delayed(Duration.zero);
-        if (pages.isNotEmpty) {
-          yield [for (final b in pages) ReaderPage(b)]; // 产出当前全部已完成页
+        if (pages.length > yieldedCount) {
+          final delta = pages.sublist(yieldedCount);
+          yieldedCount = pages.length;
+          yield [for (final b in delta) ReaderPage(b)];
         }
       }
     }
     if (current.isNotEmpty) pages.add(current);
-    if (pages.isNotEmpty) {
-      yield [for (final b in pages) ReaderPage(b)];
+    if (pages.length > yieldedCount) {
+      yield [for (final b in pages.sublist(yieldedCount)) ReaderPage(b)];
     }
   }
 
