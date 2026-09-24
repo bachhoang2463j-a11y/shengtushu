@@ -100,16 +100,22 @@ class GenerationService extends ChangeNotifier {
 
   /// 定位选区末尾（忽略空白差异）：返回 (段落序号, 段内字符偏移)。
   /// 偏移含义：插图插在该段第 offset 个字符之后；找不到返回 (-1, -1)。
-  static (int, int) locateSelectionEnd(List<String> paras, String selection) {
+  /// [hintParagraph]：当前阅读位置附近的段落序号——短选区（如单字）可能命中多个段落，
+  /// 从视口附近向两侧扩散搜索。跨段选区的尾部可能横跨段落边界，尾部逐步截短重试。
+  static (int, int) locateSelectionEnd(List<String> paras, String selection, {int hintParagraph = 0}) {
     String strip(String s) => s.replaceAll(RegExp(r'\s+'), '');
     final target = strip(selection);
-    if (target.isEmpty) return (-1, -1);
-    final tail = target.length > 16 ? target.substring(target.length - 16) : target;
-    for (var i = paras.length - 1; i >= 0; i--) {
-      final stripped = strip(paras[i]);
-      final idx = stripped.lastIndexOf(tail);
-      if (idx >= 0) {
-        return (i, _mapStrippedToOriginal(paras[i], idx + tail.length));
+    if (target.isEmpty || paras.isEmpty) return (-1, -1);
+    final clampedHint = hintParagraph.clamp(0, paras.length - 1);
+    var maxTail = target.length < 16 ? target.length : 16;
+    for (var l = maxTail; l >= 1; l--) {
+      final t = target.substring(target.length - l);
+      for (var dist = 0; dist < paras.length; dist++) {
+        for (final i in {clampedHint - dist, clampedHint + dist}) {
+          if (i < 0 || i >= paras.length) continue;
+          final idx = strip(paras[i]).indexOf(t);
+          if (idx >= 0) return (i, _mapStrippedToOriginal(paras[i], idx + t.length));
+        }
       }
     }
     return (-1, -1);

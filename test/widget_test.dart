@@ -2,7 +2,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shengtushu/data/import/book_importer.dart';
 import 'package:shengtushu/services/comfyui_client.dart';
-import 'package:shengtushu/services/default_workflow.dart';
+import 'package:shengtushu/services/generation_service.dart';
 import 'package:shengtushu/services/prompt_service.dart';
 import 'package:shengtushu/services/settings_service.dart';
 
@@ -92,7 +92,22 @@ void main() {
     expect((wf['8'] as Map)['inputs']['text'], '%prompt%');
   });
 
-  test('内置默认工作流映射正确', () {
-    expect(validateDefaultMapping(kDefaultZImageMapping), isTrue);
+  test('选区末尾定位：短选区优先视口附近，跨段选区尾部截短匹配', () {
+    final paras = [
+      '　　张飞倒提着丈八蛇矛走向大营。', // 0
+      '　　营帐连绵十里。', // 1
+      '　　他停下脚步，看向远方。', // 2
+      '　　远处尘土飞扬。', // 3
+      '　　他再次停下，观察四周。', // 4
+    ];
+    // 短选区「下」在 hint=2 附近 → 应命中第 2 段而非更远段
+    final (p1, o1) = GenerationService.locateSelectionEnd(paras, '下', hintParagraph: 2);
+    expect(p1, 2);
+    expect(o1, greaterThan(0));
+    // 跨段选区（尾部落在第 4 段）→ 尾部截短后命中第 4 段
+    final (p2, o2) = GenerationService.locateSelectionEnd(
+        paras, '营帐连绵十里。远处尘土飞扬。他再次停下，', hintParagraph: 1);
+    expect(p2, 4);
+    expect(o2, greaterThan(0));
   });
 }

@@ -202,7 +202,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _onPageChanged(int page) {
     _curPage = page;
     _saveProgress();
-    _selectionText = '';
     if (mounted) setState(() {});
   }
 
@@ -263,16 +262,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   /// 选中文段生图：只发所选文字，插图精确插在选区末尾（支持段中、跨段、不限长度）
-  Future<void> _generateFromSelection() async {
+  Future<void> _generateFromSelection(String sel) async {
     final ch = _chapter;
     if (ch == null || _book == null) return;
-    final sel = _selectionText.trim();
+    sel = sel.trim();
     if (sel.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先长按滑动选中一段文字')));
       return;
     }
     final paras = ch.content.split('\n');
-    var (anchor, offset) = GenerationService.locateSelectionEnd(paras, sel);
+    var (anchor, offset) = GenerationService.locateSelectionEnd(
+        paras, sel, hintParagraph: _currentAnchorParagraph());
     if (anchor < 0) {
       // 选区尾部无法定位（罕见），退化为当前页末段之后
       anchor = _currentPageParagraphs().$1;
@@ -558,25 +558,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Widget _renderPage(ReaderPage page, double fullWidth) {
+    // SelectionArea 在列表层统一包裹（支持跨页选择），页面内只做纯排版
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: _padH, vertical: _padV),
-      child: SelectionArea(
-        onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
-        contextMenuBuilder: (context, selectableRegionState) => _selectionMenu(selectableRegionState),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (var i = 0; i < page.blocks.length; i++)
-              _renderBlock(page.blocks[i], fullWidth,
-                  prevParIdx: i == 0 ? -1 : page.blocks[i - 1].paragraphIndex),
-          ],
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < page.blocks.length; i++)
+            _renderBlock(page.blocks[i], fullWidth,
+                prevParIdx: i == 0 ? -1 : page.blocks[i - 1].paragraphIndex),
+        ],
       ),
     );
   }
 
   /// 选中文字后的浮动菜单：生图 / 复制 / 全选（AdaptiveTextSelectionToolbar 负责锚定定位）
-  Widget _selectionMenu(SelectableRegionState selectableRegionState) {
+  Widget _selectionMenu(BuildContext context, SelectableRegionState selectableRegionState) {
     final endpoints = selectableRegionState.selectionEndpoints;
     return AdaptiveTextSelectionToolbar(
       anchors: TextSelectionToolbarAnchors(
@@ -593,9 +590,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               TextButton.icon(
                 onPressed: () {
+                  // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
+                  final sel = _selectionText;
                   selectableRegionState.hideToolbar();
                   selectableRegionState.clearSelection();
-                  _generateFromSelection();
+                  _generateFromSelection(sel);
                 },
                 icon: const Icon(Icons.auto_awesome, size: 18),
                 label: const Text('生图'),
@@ -727,24 +726,28 @@ class _ReaderScreenState extends State<ReaderScreen> {
             _scrollCtrl ??= ScrollController();
 
             if (_settings.pageMode == 'page') {
-              return Stack(children: [
-                PageView.builder(
-                  controller: _pageCtrl,
-                  itemCount: _pages.length,
-                  onPageChanged: _onPageChanged,
-                  itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
-                ),
-                if (_repaginating)
-                  Positioned(
-                    top: 6, right: 16,
-                    child: Chip(
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: Colors.black45,
-                      label: const Text('排版中…',
-                          style: TextStyle(fontSize: 11, color: Colors.white)),
-                    ),
+              return SelectionArea(
+                onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
+                contextMenuBuilder: _selectionMenu,
+                child: Stack(children: [
+                  PageView.builder(
+                    controller: _pageCtrl,
+                    itemCount: _pages.length,
+                    onPageChanged: _onPageChanged,
+                    itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
                   ),
-              ]);
+                  if (_repaginating)
+                    Positioned(
+                      top: 6, right: 16,
+                      child: Chip(
+                        visualDensity: VisualDensity.compact,
+                        backgroundColor: Colors.black45,
+                        label: const Text('排版中…',
+                            style: TextStyle(fontSize: 11, color: Colors.white)),
+                      ),
+                    ),
+                ]),
+              );
             } else {
               final ctrl = _scrollCtrl!;
               if (!ctrl.hasClients) {
@@ -758,24 +761,28 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 // 首次挂载：跳回当前阅读位置
                 WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(_curPage));
               }
-              return Stack(children: [
-                ListView.builder(
-                  controller: ctrl,
-                  itemExtent: _pageHeight,
-                  itemCount: _pages.length,
-                  itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
-                ),
-                if (_repaginating)
-                  Positioned(
-                    top: 6, right: 16,
-                    child: Chip(
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: Colors.black45,
-                      label: const Text('排版中…',
-                          style: TextStyle(fontSize: 11, color: Colors.white)),
-                    ),
+              return SelectionArea(
+                onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
+                contextMenuBuilder: _selectionMenu,
+                child: Stack(children: [
+                  ListView.builder(
+                    controller: ctrl,
+                    itemExtent: _pageHeight,
+                    itemCount: _pages.length,
+                    itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
                   ),
-              ]);
+                  if (_repaginating)
+                    Positioned(
+                      top: 6, right: 16,
+                      child: Chip(
+                        visualDensity: VisualDensity.compact,
+                        backgroundColor: Colors.black45,
+                        label: const Text('排版中…',
+                            style: TextStyle(fontSize: 11, color: Colors.white)),
+                      ),
+                    ),
+                ]),
+              );
             }
           });
         },

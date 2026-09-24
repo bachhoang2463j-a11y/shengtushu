@@ -390,7 +390,7 @@ class _ImportScreenState extends State<ImportScreen> with SingleTickerProviderSt
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: _scannedFiles.length,
-      separatorBuilder: (_, __) => const Divider(height: 1, indent: 64),
+      separatorBuilder: (_, _) => const Divider(height: 1, indent: 64),
       itemBuilder: (context, idx) {
         final f = _scannedFiles[idx];
         final isChecked = _selectedPaths.contains(f.path);
