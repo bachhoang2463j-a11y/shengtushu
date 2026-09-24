@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'data/database.dart';
+import 'services/default_workflow.dart';
 import 'services/generation_service.dart';
 import 'services/settings_service.dart';
 import 'ui/bookshelf_screen.dart';
@@ -10,6 +11,7 @@ Future<void> main() async {
   await SettingsService.instance.init();
   final db = AppDatabase();
   GenerationService.instance.attachDb(db);
+  await seedDefaultWorkflow(db); // 首次启动内置 Z-Image 默认工作流
   runApp(ShengTuShuApp(db: db));
 }
 

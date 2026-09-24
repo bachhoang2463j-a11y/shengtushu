@@ -45,6 +45,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   ScrollController? _scrollCtrl;
   int _curPage = 0;
   int? _pendingRestoreParagraph;
+  bool _generating = false;
 
   @override
   void initState() {
@@ -203,7 +204,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final ch = _chapter;
     if (ch == null || _book == null) return;
     final (first, pageParas) = _currentPageParagraphs();
-    if (pageParas.isEmpty) return;
+    if (pageParas.isEmpty) {
+      _showError('当前页没有可用的段落，翻到有正文的一页再试。');
+      return;
+    }
+    setState(() => _generating = true);
     try {
       final n = await _gen.generateBatch(
         book: _book!,
@@ -217,10 +222,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
             .showSnackBar(SnackBar(content: Text('已创建 $n 个插图占位符，开始排队生成…')));
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生图失败：$e')));
-      }
+      if (mounted) _showError(e.toString());
+    } finally {
+      if (mounted) setState(() => _generating = false);
     }
+  }
+
+  void _showError(String message) {
+    showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Row(children: [
+          Icon(Icons.error_outline, color: Colors.red),
+          SizedBox(width: 8),
+          Text('生图失败'),
+        ]),
+        content: SingleChildScrollView(child: Text(message, style: const TextStyle(height: 1.6))),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('知道了')),
+        ],
+      ),
+    );
   }
 
   Future<void> _generateSingle(int paragraphIndex) async {
@@ -503,11 +525,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _generatePage,
-        icon: const Icon(Icons.auto_awesome),
-        label: const Text('本页生图'),
-      ),
+      floatingActionButton: _generating
+          ? const FloatingActionButton(
+              onPressed: null,
+              child: SizedBox(
+                  width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
+            )
+          : FloatingActionButton.extended(
+              onPressed: _generatePage,
+              icon: const Icon(Icons.auto_awesome),
+              label: const Text('本页生图'),
+            ),
       body: StreamBuilder<List<Illustration>>(
         stream: _illsStream,
         builder: (context, illSnap) {

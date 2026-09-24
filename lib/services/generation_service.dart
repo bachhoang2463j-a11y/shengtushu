@@ -65,6 +65,9 @@ class GenerationService extends ChangeNotifier {
     required int firstParagraphIndex, // 页首段落在本章中的序号（0-based）
     required List<String> history, // 前 N 段
   }) async {
+    // ---- 预校验：任何一步不满足立即抛明确错误，不让用户面对"无反应" ----
+    await _precheck();
+
     final cfg = _settings.llm;
     final messages = _prompt.buildMessages(
       template: _settings.indepTemplate,
@@ -75,8 +78,11 @@ class GenerationService extends ChangeNotifier {
       personas: _settings.personas,
     );
 
+    debugPrint('[生图] 调用 LLM 提炼提示词（${pageParagraphs.length} 段）…');
     final raw = await _llm.chat(cfg, messages);
+    debugPrint('[生图] LLM 返回 ${raw.length} 字符，解析 insertions…');
     final insertions = _prompt.parseInsertions(raw, maxParagraph: pageParagraphs.length);
+    debugPrint('[生图] 解析出 ${insertions.length} 个插图位置');
 
     var created = 0;
     for (final ins in insertions) {
@@ -128,6 +134,32 @@ class GenerationService extends ChangeNotifier {
     notifyListeners();
     if (!_running) _drain();
     return id;
+  }
+
+  /// 生图前快速校验：工作流已启用且可提交、LLM 已配置、ComfyUI 可达
+  Future<void> _precheck() async {
+    final db = _requireDb();
+    final wfRows = await (db.select(db.workflows)..where((t) => t.isActive.equals(true))).get();
+    if (wfRows.isEmpty) {
+      throw const GenerationException(
+          '没有启用的 ComfyUI 工作流。\n\n请到 设置 → 工作流管理 载入内置 Z-Image 工作流或导入 API 格式 JSON。');
+    }
+    final mapping = WorkflowMapping.fromJson(wfRows.first.mapping);
+    final hasVar = wfRows.first.apiJson.contains('%prompt%');
+    if (mapping.positive == null && !hasVar) {
+      throw const GenerationException(
+          '工作流既没有映射「正向提示词」节点，也不含 %prompt% 变量。\n\n请到 设置 → 工作流管理 点击该工作流完成映射。');
+    }
+    final llm = _settings.llm;
+    if (llm.baseUrl.trim().isEmpty) {
+      throw const GenerationException('LLM API 地址未配置。\n\n请到 设置 → LLM 填写 API 地址与 Key。');
+    }
+    final (ok, detail) = await _comfy.testConnection(_settings.comfyUrl);
+    if (!ok) {
+      throw GenerationException(
+          '无法连接 ComfyUI：$detail\n\n检查：①手机与电脑同一局域网 ②ComfyUI 已启动且监听端口正确 ③电脑防火墙放行 8188 入站');
+    }
+    debugPrint('[生图] 预校验通过：workflow=${wfRows.first.name}，comfy=${_settings.comfyUrl}');
   }
 
   // ---------- 第二步：顺序队列 ----------
@@ -216,6 +248,7 @@ class GenerationService extends ChangeNotifier {
         return;
       } catch (e) {
         final msg = e is GenerationException ? e.message : e.toString();
+        debugPrint('[生图] 任务 ${task.illustrationId} 第 ${attempt + 1} 次尝试失败：$msg');
         if (attempt >= settings.genRetry) {
           task.status = 'failed';
           task.error = msg;

@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import '../data/database.dart';
 import '../services/comfyui_client.dart';
+import '../services/default_workflow.dart';
 import '../services/settings_service.dart';
 import 'widgets.dart';
 import 'workflow_map_screen.dart';
@@ -454,10 +455,28 @@ class _WorkflowManagerScreenState extends State<WorkflowManagerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('ComfyUI 工作流')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _import,
-        icon: const Icon(Icons.upload_file),
-        label: const Text('导入 API JSON'),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: 'loadDefault',
+            onPressed: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              await loadDefaultWorkflow(widget.db);
+              messenger.showSnackBar(
+                  const SnackBar(content: Text('已载入内置 Z-Image 默认工作流并启用')));
+            },
+            child: const Icon(Icons.auto_awesome),
+          ),
+          const SizedBox(height: 8),
+          FloatingActionButton.extended(
+            heroTag: 'importJson',
+            onPressed: _import,
+            icon: const Icon(Icons.upload_file),
+            label: const Text('导入 API JSON'),
+          ),
+        ],
       ),
       body: StreamBuilder(
         stream: (widget.db.select(widget.db.workflows)).watch(),

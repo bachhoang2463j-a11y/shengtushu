@@ -1,11 +1,13 @@
 // ComfyUI 客户端：连接层核心。
 // 提交/轮询/下载流程移植自 NEKOparapa/ReaDreamAI 的 comfyui_platform.dart（GPL-3.0），
-// 改造点：工作流与节点映射来自本地数据库；进度以 Stream 暴露给 UI。
+// 改造点：工作流与节点映射来自本地数据库；%变量% 替换语法（移植自生图助手脚本）；
+// WebSocket 失败自动降级轮询 /history；进度以 Stream 暴露给 UI。
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -98,7 +100,38 @@ class ComfyUIClient {
     }
   }
 
-  /// 按映射克隆工作流并替换节点输入值
+  /// 脚本语法：把工作流 JSON 里字符串值中的 %prompt% %negative% %width% %height% %seed% %batch%
+  /// 替换为实际值；若整个字符串就是单个数值型变量则转为 num。
+  /// 注意：只有含 %占位符% 的字符串才参与转换——连接线引用等普通字符串（如 "10"）必须原样保留。
+  Map<String, dynamic> replaceVariables(
+      Map<String, dynamic> workflow, Map<String, Object?> vars) {
+    Object? walk(Object? node) {
+      if (node is Map) {
+        return node.map((k, v) => MapEntry(k.toString(), walk(v)));
+      }
+      if (node is List) {
+        return node.map(walk).toList();
+      }
+      if (node is String) {
+        if (!node.contains('%')) return node; // 链接引用等原样保留
+        var s = node;
+        for (final e in vars.entries) {
+          s = s.replaceAll('%${e.key}%', '${e.value}');
+        }
+        if (s.contains('%')) return s; // 还有未识别的变量，保持原样
+        final trimmed = s.trim();
+        final n = num.tryParse(trimmed);
+        if (n != null && RegExp(r'^-?\d+(\.\d+)?$').hasMatch(trimmed)) return n;
+        return s;
+      }
+      return node;
+    }
+
+    return (walk(workflow) as Map).cast<String, dynamic>();
+  }
+
+  /// 按映射克隆工作流并替换节点输入值。
+  /// 先做 %变量% 替换（脚本语法），再做节点映射覆盖（映射优先级更高）。
   Map<String, dynamic> prepareWorkflow({
     required Map<String, dynamic> workflow,
     required WorkflowMapping mapping,
@@ -107,9 +140,20 @@ class ComfyUIClient {
     int? width,
     int? height,
     int? batch,
+    int? seed,
     bool autoRandomSeed = true,
   }) {
-    final wf = jsonDecode(jsonEncode(workflow)) as Map<String, dynamic>; // 深拷贝
+    final actualSeed = (autoRandomSeed && mapping.seed != null)
+        ? (Random().nextInt(1 << 30) * 4294967296 + Random().nextInt(1 << 30))
+        : seed;
+    var wf = replaceVariables(workflow, {
+      'prompt': positive,
+      'negative': negative ?? '',
+      'width': width ?? 0,
+      'height': height ?? 0,
+      'seed': actualSeed ?? 0,
+      'batch': batch ?? 1,
+    });
 
     void setByRole(String? ref, Object value, String role) {
       if (ref == null) return;
@@ -130,9 +174,7 @@ class ComfyUIClient {
     if (width != null) setByRole(mapping.width, width, '宽度');
     if (height != null) setByRole(mapping.height, height, '高度');
     if (batch != null) setByRole(mapping.batch, batch, '批次数');
-    if (autoRandomSeed && mapping.seed != null) {
-      setByRole(mapping.seed, Random().nextInt(1 << 30), '种子');
-    }
+    if (actualSeed != null) setByRole(mapping.seed, actualSeed, '种子');
     return wf;
   }
 
@@ -154,7 +196,10 @@ class ComfyUIClient {
     final base = normalizeUrl(baseUrl);
     final clientId = const Uuid().v4();
 
-    void say(String m) => onProgress?.call(ComfyProgress(message: m));
+    void say(String m) {
+      debugPrint('[ComfyUI] $m');
+      onProgress?.call(ComfyProgress(message: m));
+    }
 
     say('提交工作流…');
     final promptId = await _queuePrompt(base, workflow, mapping, clientId, positive, negative, width, height, batch, autoRandomSeed);
@@ -163,8 +208,16 @@ class ComfyUIClient {
     await _waitForCompletion(base, promptId, clientId, onProgress);
     say('执行完成，获取结果…');
 
-    final history = await _getHistory(base, promptId);
+    Map<String, dynamic> history;
+    try {
+      history = await _getHistory(base, promptId);
+    } on ComfyUIException {
+      say('结果未就绪，轮询等待…');
+      await _pollHistory(base, promptId);
+      history = await _getHistory(base, promptId);
+    }
     final paths = await _downloadImages(base, history, saveDir);
+    debugPrint('[ComfyUI] 图片已保存: $paths');
     return paths;
   }
 
@@ -196,6 +249,45 @@ class ComfyUIClient {
   }
 
   Future<void> _waitForCompletion(String base, String promptId, String clientId,
+      void Function(ComfyProgress)? onProgress) async {
+    try {
+      await _waitForCompletionWs(base, promptId, clientId, onProgress);
+    } on ComfyUIException catch (e) {
+      // WS 不可用（如被代理/服务器拒绝）→ 降级为轮询 /history
+      if (e.message.startsWith('WebSocket')) {
+        debugPrint('[ComfyUI] WebSocket 不可用，降级轮询 /history：${e.message}');
+        await _pollHistory(base, promptId);
+      } else {
+        rethrow;
+      }
+    }
+  }
+
+  Future<void> _pollHistory(String base, String promptId) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      try {
+        final r = await client.get(Uri.parse('$base/history/$promptId')).timeout(const Duration(seconds: 10));
+        if (r.statusCode != 200) continue;
+        final history = jsonDecode(r.body) as Map<String, dynamic>;
+        final entry = history[promptId];
+        if (entry is! Map<String, dynamic>) continue;
+        final status = entry['status'];
+        if (status is Map && status['status_str'] == 'error') {
+          throw const ComfyUIException('执行出错（历史状态 error）');
+        }
+        return; // 有记录即视为完成
+      } on ComfyUIException {
+        rethrow;
+      } catch (_) {
+        continue; // 网络抖动继续轮询
+      }
+    }
+    throw const ComfyUIException('轮询超时：任务未完成');
+  }
+
+  Future<void> _waitForCompletionWs(String base, String promptId, String clientId,
       void Function(ComfyProgress)? onProgress) async {
     final wsUri = Uri.parse('${base.replaceFirst('http', 'ws')}/ws?clientId=$clientId');
     final completer = Completer<void>();

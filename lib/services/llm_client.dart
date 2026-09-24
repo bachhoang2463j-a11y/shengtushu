@@ -1,4 +1,5 @@
 // LLM 客户端：OpenAI 兼容 /chat/completions（与脚本 buildLLMRequestBody 同构）
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -32,14 +33,20 @@ class LlmClient {
       'temperature': cfg.temperature,
     };
 
-    final r = await client.post(
-      Uri.parse('$base/chat/completions'),
-      headers: {
-        'Content-Type': 'application/json',
-        if (cfg.apiKey.isNotEmpty) 'Authorization': 'Bearer ${cfg.apiKey}',
-      },
-      body: jsonEncode(body),
-    ).timeout(const Duration(minutes: 3));
+    http.Response r;
+    try {
+      r = await client.post(
+        Uri.parse('$base/chat/completions'),
+        headers: {
+          'Content-Type': 'application/json',
+          if (cfg.apiKey.isNotEmpty) 'Authorization': 'Bearer ${cfg.apiKey}',
+        },
+        body: jsonEncode(body),
+      ).timeout(const Duration(seconds: 120));
+    } on TimeoutException {
+      throw const LlmException(
+          'LLM 请求超时（120 秒无响应）。\n\n网关/线路可能拥堵，请重试一次，或更换 API 地址/模型。');
+    }
 
     if (r.statusCode != 200) {
       throw LlmException('LLM HTTP ${r.statusCode}：${_truncate(r.body)}');
