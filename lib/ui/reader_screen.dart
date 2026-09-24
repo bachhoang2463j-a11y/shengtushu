@@ -575,43 +575,52 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  /// 选中文字后的自定义菜单：生图 / 复制 / 全选
+  /// 选中文字后的浮动菜单：生图 / 复制 / 全选（AdaptiveTextSelectionToolbar 负责锚定定位）
   Widget _selectionMenu(SelectableRegionState selectableRegionState) {
-    return Material(
-      elevation: 4,
-      borderRadius: BorderRadius.circular(10),
-      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          TextButton.icon(
-            onPressed: () {
-              selectableRegionState.hideToolbar();
-              selectableRegionState.clearSelection();
-              _generateFromSelection();
-            },
-            icon: const Icon(Icons.auto_awesome, size: 18),
-            label: const Text('生图'),
-          ),
-          TextButton.icon(
-            onPressed: () {
-              // ignore: deprecated_member_use
-              selectableRegionState.copySelection(SelectionChangedCause.toolbar);
-              selectableRegionState.hideToolbar();
-            },
-            icon: const Icon(Icons.copy_outlined, size: 18),
-            label: const Text('复制'),
-          ),
-          TextButton.icon(
-            onPressed: () {
-              selectableRegionState.selectAll(SelectionChangedCause.toolbar);
-              selectableRegionState.hideToolbar();
-            },
-            icon: const Icon(Icons.select_all_outlined, size: 18),
-            label: const Text('全选'),
-          ),
-        ]),
+    final endpoints = selectableRegionState.selectionEndpoints;
+    return AdaptiveTextSelectionToolbar(
+      anchors: TextSelectionToolbarAnchors(
+        primaryAnchor: endpoints.last.point,
+        secondaryAnchor: endpoints.first.point,
       ),
+      children: [
+        Material(
+          elevation: 4,
+          borderRadius: BorderRadius.circular(10),
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              TextButton.icon(
+                onPressed: () {
+                  selectableRegionState.hideToolbar();
+                  selectableRegionState.clearSelection();
+                  _generateFromSelection();
+                },
+                icon: const Icon(Icons.auto_awesome, size: 18),
+                label: const Text('生图'),
+              ),
+              TextButton.icon(
+                onPressed: () {
+                  // ignore: deprecated_member_use
+                  selectableRegionState.copySelection(SelectionChangedCause.toolbar);
+                  selectableRegionState.hideToolbar();
+                },
+                icon: const Icon(Icons.copy_outlined, size: 18),
+                label: const Text('复制'),
+              ),
+              TextButton.icon(
+                onPressed: () {
+                  selectableRegionState.selectAll(SelectionChangedCause.toolbar);
+                  selectableRegionState.hideToolbar();
+                },
+                icon: const Icon(Icons.select_all_outlined, size: 18),
+                label: const Text('全选'),
+              ),
+            ]),
+          ),
+        ),
+      ],
     );
   }
 
