@@ -143,6 +143,10 @@ class SettingsService extends ChangeNotifier {
   // ---------- 章节正则 ----------
   String get chapterRegex => _get('chapterRegex', kDefaultChapterRegexSetting);
   Future<void> setChapterRegex(String v) => _set('chapterRegex', v);
+
+  // ---------- 本页生图按钮 ----------
+  bool get showGenFab => _sp.getBool('showGenFab') ?? false;
+  Future<void> setShowGenFab(bool v) async { await _sp.setBool('showGenFab', v); notifyListeners(); }
 }
 
 const String kDefaultChapterRegexSetting = r'^\s*(第[0-9〇零一二三四五六七八九十百千万两]+[章回节卷集部篇].*)$';

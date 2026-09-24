@@ -1,5 +1,5 @@
 // 分页引擎：把「段落 + 插图占位」流切成页。
-// 依赖 flutter/painting 的 TextPainter 做测量（与渲染同源，保证测量一致）。
+// 流式产出：先出前几批页立即可读，其余继续在事件循环间隙排版（不冻结 UI）。
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
@@ -70,11 +70,12 @@ class PageLayoutConfig {
 }
 
 class Paginator {
-  /// 把章节版面流切页。段落数很大时也应控制单章规模（<2000 段）。
-  static List<ReaderPage> paginate({
+  /// 流式分页：每处理 [chunkSize] 个版面项让出一次事件循环并产出已完成的新页。
+  static Stream<List<ReaderPage>> paginateStream({
     required List<LayoutItem> items,
     required PageLayoutConfig config,
-  }) {
+    int chunkSize = 80,
+  }) async* {
     final style = TextStyle(
       fontSize: config.fontSize,
       height: config.lineHeight,
@@ -82,9 +83,10 @@ class Paginator {
       color: const ui.Color(0xFF000000),
     );
 
-    final pages = List<List<PageBlock>>.empty(growable: true);
+    final pages = <List<PageBlock>>[];
     var current = <PageBlock>[];
     var used = 0.0;
+    var sinceYield = 0;
 
     void newPage() {
       if (current.isNotEmpty) pages.add(current);
@@ -117,7 +119,6 @@ class Paginator {
       final painted = _paint(par.text, style, config.width);
       final lineMetrics = painted.computeLineMetrics();
       final lineCount = lineMetrics.length;
-      var consumed = 0.0; // 已放进当前页的行高总和
       var fromLine = 0;
       var lineIdx = 0;
       var firstChunk = true;
@@ -156,17 +157,26 @@ class Paginator {
         current.add(TextBlock(par.paragraphIndex,
             text: slice, isFirst: fromLine == 0, isLast: endLine >= lineCount));
         used += acc;
-        consumed = acc;
         lineIdx = endLine;
         fromLine = endLine;
         firstChunk = false;
         if (used >= config.height - 0.5) newPage();
-        if (consumed == 0 && endLine >= lineCount) break;
       }
       painted.dispose();
+
+      sinceYield++;
+      if (sinceYield >= chunkSize) {
+        sinceYield = 0;
+        await Future<void>.delayed(Duration.zero);
+        if (pages.isNotEmpty) {
+          yield [for (final b in pages) ReaderPage(b)]; // 产出当前全部已完成页
+        }
+      }
     }
     if (current.isNotEmpty) pages.add(current);
-    return pages.map((b) => ReaderPage(b)).toList();
+    if (pages.isNotEmpty) {
+      yield [for (final b in pages) ReaderPage(b)];
+    }
   }
 
   static TextPainter _paint(String text, TextStyle style, double width) {

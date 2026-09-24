@@ -1,4 +1,4 @@
-// 阅读器：分页渲染 / 双翻页模式 / 占位符插图 / 段落生图 / 进度记忆
+// 阅读器：流式分页 / 双翻页模式 / 选中文段生图 / 插图管理 / 进度记忆
 import 'dart:io';
 
 import 'package:drift/drift.dart' show OrderingTerm, Value;
@@ -13,6 +13,7 @@ import 'edit_screen.dart';
 import 'image_viewer_screen.dart';
 import 'settings_screen.dart';
 import 'theme_ext.dart';
+import 'widgets.dart';
 
 const double _padH = 20;
 const double _padV = 16;
@@ -38,14 +39,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   List<ReaderPage> _pages = const [];
   String _layoutKey = '';
-  bool _computing = false;
+  bool _repaginating = false;
+  int _repaginateSeq = 0;
   double _pageHeight = 0;
+  Map<int, Illustration> _illsById = const {};
 
   PageController? _pageCtrl;
   ScrollController? _scrollCtrl;
   int _curPage = 0;
   int? _pendingRestoreParagraph;
   bool _generating = false;
+  String _selectionText = '';
 
   @override
   void initState() {
@@ -86,6 +90,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _chapter = ch;
       _layoutKey = '';
       _pages = const [];
+      _curPage = 0;
+      _selectionText = '';
     });
   }
 
@@ -93,10 +99,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (idx < 0 || idx >= _chapters.length) return;
     setState(() {
       _chapterIdx = idx;
-      _curPage = 0;
       _pendingRestoreParagraph = 0;
     });
-    _pageCtrl?.jumpToPage(0);
     await _loadChapter();
   }
 
@@ -124,9 +128,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return items;
   }
 
+  /// 当前阅读位置锚点（当前页首段）
+  int _currentAnchorParagraph() {
+    if (_pages.isEmpty || _curPage >= _pages.length) return 0;
+    final blocks = _pages[_curPage].blocks;
+    return blocks.isEmpty ? 0 : blocks.first.paragraphIndex;
+  }
+
+  /// 流式重排版：期间旧页面保持可见可翻，完成后按段落锚点回位
   Future<void> _recompute(List<String> paras, List<Illustration> ills, Size size) async {
-    setState(() => _computing = true);
-    await Future<void>.delayed(Duration.zero);
+    final seq = ++_repaginateSeq;
+    final anchor = _pendingRestoreParagraph ?? _currentAnchorParagraph();
+    _pendingRestoreParagraph = null;
+    if (mounted) setState(() => _repaginating = true);
+
     final config = PageLayoutConfig(
       width: size.width,
       height: size.height,
@@ -134,21 +149,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
       lineHeight: _settings.lineHeight,
       paragraphSpacing: _settings.fontSize * 0.55,
     );
-    final pages = Paginator.paginate(items: _buildItems(paras, ills), config: config);
-    if (!mounted) return;
-    // 锚定当前阅读位置：记住当前页首段
-    int anchor = _pendingRestoreParagraph ?? 0;
-    if (_pendingRestoreParagraph == null && _pages.isNotEmpty && _curPage < _pages.length) {
-      final blocks = _pages[_curPage].blocks;
-      anchor = blocks.isEmpty ? 0 : blocks.first.paragraphIndex;
+    final fresh = <ReaderPage>[];
+    await for (final batch in Paginator.paginateStream(items: _buildItems(paras, ills), config: config)) {
+      if (seq != _repaginateSeq) return; // 已有更新的排版任务
+      fresh.addAll(batch);
     }
-    _pendingRestoreParagraph = null;
-    final target = pages.indexWhere((p) => p.blocks.any((b) => b.paragraphIndex >= anchor));
+    if (seq != _repaginateSeq || !mounted) return;
+
+    var target = fresh.indexWhere((p) => p.blocks.any((b) => b.paragraphIndex >= anchor));
+    if (target < 0) target = 0;
     setState(() {
-      _pages = pages;
+      _pages = fresh;
       _pageHeight = size.height;
-      _computing = false;
-      _curPage = target < 0 ? 0 : target;
+      _repaginating = false;
+      _curPage = target.clamp(0, fresh.length - 1);
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(_curPage));
   }
@@ -169,6 +183,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _onPageChanged(int page) {
     _curPage = page;
     _saveProgress();
+    _selectionText = '';
     if (mounted) setState(() {});
   }
 
@@ -218,13 +233,75 @@ class _ReaderScreenState extends State<ReaderScreen> {
         history: _historyBefore(first),
       );
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('已创建 $n 个插图占位符，开始排队生成…')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('已创建 $n 个插图占位符（插在第 ${first + 1} 段之后），开始排队生成…')));
       }
     } catch (e) {
       if (mounted) _showError(e.toString());
     } finally {
       if (mounted) setState(() => _generating = false);
+    }
+  }
+
+  /// 选中文段生图：插图插在「选择结束的段落」之后
+  Future<void> _generateFromSelection() async {
+    final ch = _chapter;
+    if (ch == null || _book == null) return;
+    final sel = _selectionText.trim();
+    if (sel.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先长按滑动选中一段文字')));
+      return;
+    }
+    final paras = ch.content.split('\n');
+    // 用选区尾部匹配所在段落
+    final tail = sel.length > 12 ? sel.substring(sel.length - 12) : sel;
+    final t = tail.replaceAll(RegExp(r'\s+'), '');
+    var anchor = -1;
+    for (var i = paras.length - 1; i >= 0; i--) {
+      if (paras[i].replaceAll(RegExp(r'\s+'), '').contains(t)) {
+        anchor = i;
+        break;
+      }
+    }
+    if (anchor < 0) {
+      anchor = _currentAnchorParagraph();
+    }
+    setState(() => _generating = true);
+    try {
+      final n = await _gen.generateSelection(
+        book: _book!,
+        chapter: ch,
+        selectionText: sel,
+        endParagraphIndex: anchor,
+        history: _historyBefore(anchor),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('已创建 $n 个插图占位符（插在第 ${anchor + 1} 段之后），开始排队生成…')));
+      }
+    } catch (e) {
+      if (mounted) _showError(e.toString());
+    } finally {
+      if (mounted) setState(() => _generating = false);
+    }
+  }
+
+  Future<void> _generateSingle(int paragraphIndex) async {
+    final ch = _chapter;
+    if (ch == null || _book == null) return;
+    try {
+      await _gen.generateSingle(
+        book: _book!,
+        chapter: ch,
+        paragraphIndex: paragraphIndex,
+        history: _historyBefore(paragraphIndex),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('已入队生成（插在第 ${paragraphIndex + 1} 段之后）')));
+      }
+    } catch (e) {
+      if (mounted) _showError(e.toString());
     }
   }
 
@@ -245,26 +322,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  Future<void> _generateSingle(int paragraphIndex) async {
-    final ch = _chapter;
-    if (ch == null || _book == null) return;
-    try {
-      await _gen.generateSingle(
-        book: _book!,
-        chapter: ch,
-        paragraphIndex: paragraphIndex,
-        history: _historyBefore(paragraphIndex),
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已入队生成')));
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('生图失败：$e')));
-      }
-    }
-  }
-
   void _showParagraphMenu(int paragraphIndex, String text) {
     showModalBottomSheet(
       context: context,
@@ -272,7 +329,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           ListTile(
             leading: const Icon(Icons.image_outlined),
-            title: const Text('为本段生成插图'),
+            title: Text('为本段生成插图（插在第 ${paragraphIndex + 1} 段后）'),
             onTap: () {
               Navigator.pop(c);
               _generateSingle(paragraphIndex);
@@ -284,6 +341,65 @@ class _ReaderScreenState extends State<ReaderScreen> {
             onTap: () {
               Clipboard.setData(ClipboardData(text: text));
               Navigator.pop(c);
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+
+  void _showImageMenu(ImageBlock b) {
+    showModalBottomSheet(
+      context: context,
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.zoom_in_outlined),
+            title: const Text('查看大图'),
+            onTap: () {
+              Navigator.pop(c);
+              Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => ImageViewerScreen(
+                      imagePath: b.imagePath ?? '', prompt: b.prompt)));
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.edit_note_outlined),
+            title: const Text('修改提示词并重新生图'),
+            onTap: () async {
+              Navigator.pop(c);
+              final v = await textInputDialog(context,
+                  title: '生图提示词', initial: b.prompt, maxLines: 6);
+              if (v != null && v.trim().isNotEmpty) {
+                await _gen.updatePromptAndRegenerate(b.illustrationId, v);
+              }
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.refresh_outlined),
+            title: const Text('仅重新生图'),
+            onTap: () {
+              Navigator.pop(c);
+              _gen.regenerate(b.illustrationId);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline, color: Colors.red),
+            title: const Text('删除插图', style: TextStyle(color: Colors.red)),
+            onTap: () async {
+              Navigator.pop(c);
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (cc) => AlertDialog(
+                  title: const Text('删除插图'),
+                  content: const Text('将删除该插图及其图片文件，确定？'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(cc, false), child: const Text('取消')),
+                    FilledButton(onPressed: () => Navigator.pop(cc, true), child: const Text('删除')),
+                  ],
+                ),
+              );
+              if (ok == true) await _gen.deleteIllustration(b.illustrationId);
             },
           ),
         ]),
@@ -386,16 +502,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Widget _renderImage(ImageBlock b, double fullWidth) {
+    // 实时状态：排版缓存里只有布局信息，状态/路径以数据库最新值为准（进度变化不触发重排版）
+    final live = _illsById[b.illustrationId];
+    final status = live?.status ?? b.status;
+    final imagePath = live?.imagePath ?? b.imagePath;
+    final error = live?.error ?? b.error;
+    final prompt = live?.prompt ?? b.prompt;
     final h = (fullWidth / b.aspect.clamp(0.2, 5.0)).clamp(60.0, _pageHeight);
     Widget child;
-    switch (b.status) {
+    switch (status) {
       case 'done':
         child = InkWell(
           onTap: () => Navigator.push(context, MaterialPageRoute(
               builder: (_) => ImageViewerScreen(
-                  imagePath: b.imagePath ?? '', prompt: b.prompt))),
+                  imagePath: imagePath ?? '', prompt: prompt))),
           child: Image.file(
-            File(b.imagePath ?? ''),
+            File(imagePath ?? ''),
             fit: BoxFit.cover,
             errorBuilder: (_, _, _) => const Center(child: Icon(Icons.broken_image)),
           ),
@@ -423,15 +545,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
         break;
       case 'failed':
         child = InkWell(
-          onTap: () => _gen.retryOne(b.illustrationId),
+          onTap: () => _gen.regenerate(b.illustrationId),
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
               const Icon(Icons.error_outline, color: Colors.red),
               const SizedBox(height: 4),
-              Text(b.error, maxLines: 2, overflow: TextOverflow.ellipsis,
+              Text(error, maxLines: 2, overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 11, color: Colors.red)),
-              const Text('点按重试', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const Text('长按插图可管理 · 点按重试', style: TextStyle(fontSize: 12, color: Colors.grey)),
             ]),
           ),
         );
@@ -443,30 +565,85 @@ class _ReaderScreenState extends State<ReaderScreen> {
           Text('插图占位 · 等待生成', style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
         ]);
     }
-    return Container(
-      height: h,
-      margin: const EdgeInsets.symmetric(vertical: 6),
-      decoration: BoxDecoration(
-        color: context.readerBackground == Colors.white ? Colors.grey.shade100 : Colors.grey.shade900,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade400.withValues(alpha: 0.4)),
+    return GestureDetector(
+      onLongPress: () => _showImageMenu(ImageBlock(
+        b.paragraphIndex,
+        illustrationId: b.illustrationId,
+        status: status,
+        aspect: b.aspect,
+        imagePath: imagePath,
+        error: error,
+        prompt: prompt,
+      )),
+      child: Container(
+        height: h,
+        margin: const EdgeInsets.symmetric(vertical: 6),
+        decoration: BoxDecoration(
+          color: context.readerBackground == Colors.white ? Colors.grey.shade100 : Colors.grey.shade900,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade400.withValues(alpha: 0.4)),
+        ),
+        width: fullWidth,
+        clipBehavior: Clip.antiAlias,
+        child: child,
       ),
-      width: fullWidth,
-      clipBehavior: Clip.antiAlias,
-      child: child,
     );
   }
 
   Widget _renderPage(ReaderPage page, double fullWidth) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: _padH, vertical: _padV),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < page.blocks.length; i++)
-            _renderBlock(page.blocks[i], fullWidth,
-                prevParIdx: i == 0 ? -1 : page.blocks[i - 1].paragraphIndex),
-        ],
+      child: SelectionArea(
+        onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
+        contextMenuBuilder: (context, selectableRegionState) => _selectionMenu(selectableRegionState),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var i = 0; i < page.blocks.length; i++)
+              _renderBlock(page.blocks[i], fullWidth,
+                  prevParIdx: i == 0 ? -1 : page.blocks[i - 1].paragraphIndex),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 选中文字后的自定义菜单：生图 / 复制 / 全选
+  Widget _selectionMenu(SelectableRegionState selectableRegionState) {
+    return Material(
+      elevation: 4,
+      borderRadius: BorderRadius.circular(10),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          TextButton.icon(
+            onPressed: () {
+              selectableRegionState.hideToolbar();
+              selectableRegionState.clearSelection();
+              _generateFromSelection();
+            },
+            icon: const Icon(Icons.auto_awesome, size: 18),
+            label: const Text('生图'),
+          ),
+          TextButton.icon(
+            onPressed: () {
+              // ignore: deprecated_member_use
+              selectableRegionState.copySelection(SelectionChangedCause.toolbar);
+              selectableRegionState.hideToolbar();
+            },
+            icon: const Icon(Icons.copy_outlined, size: 18),
+            label: const Text('复制'),
+          ),
+          TextButton.icon(
+            onPressed: () {
+              selectableRegionState.selectAll(SelectionChangedCause.toolbar);
+              selectableRegionState.hideToolbar();
+            },
+            icon: const Icon(Icons.select_all_outlined, size: 18),
+            label: const Text('全选'),
+          ),
+        ]),
       ),
     );
   }
@@ -507,13 +684,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
             ]),
           ),
           IconButton(
-            tooltip: '编辑本章',
+            tooltip: '编辑本页',
             icon: const Icon(Icons.edit_outlined),
             onPressed: () async {
               final c = _chapter;
-              if (c == null) return;
-              await Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => EditScreen(db: widget.db, chapter: c)));
+              if (c == null || _pages.isEmpty || _curPage >= _pages.length) return;
+              final idxs = _pages[_curPage].blocks
+                  .whereType<TextBlock>()
+                  .map((b) => b.paragraphIndex)
+                  .toList()
+                ..sort();
+              if (idxs.isEmpty) return;
+              final start = idxs.first;
+              final end = idxs.last;
+              await Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => EditScreen(
+                      db: widget.db, chapter: c, startParagraph: start, endParagraph: end)));
               await _loadChapter();
             },
           ),
@@ -525,48 +711,64 @@ class _ReaderScreenState extends State<ReaderScreen> {
           ),
         ],
       ),
-      floatingActionButton: _generating
-          ? const FloatingActionButton(
-              onPressed: null,
-              child: SizedBox(
-                  width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
-            )
-          : FloatingActionButton.extended(
+      floatingActionButton: (_settings.showGenFab && !_generating)
+          ? FloatingActionButton.extended(
               onPressed: _generatePage,
               icon: const Icon(Icons.auto_awesome),
               label: const Text('本页生图'),
-            ),
+            )
+          : (_generating
+              ? const FloatingActionButton(
+                  onPressed: null,
+                  child: SizedBox(
+                      width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
+                )
+              : null),
       body: StreamBuilder<List<Illustration>>(
         stream: _illsStream,
         builder: (context, illSnap) {
           final ills = illSnap.data ?? const <Illustration>[];
+          _illsById = {for (final i in ills) i.id: i};
           return LayoutBuilder(builder: (context, cons) {
             final size = Size(
               cons.maxWidth - _padH * 2,
               cons.maxHeight - _padV * 2,
             );
-            final key = '${ch.id}|${ch.content.length}|${ills.map((e) => '${e.id}:${e.status}:${e.imgWidth}x${e.imgHeight}').join(',')}'
+            // 版面键只含影响布局的因素：段落内容 / 插图 id 与宽高 / 页面尺寸 / 字号行距。
+            // 生成状态与进度变化不触发重排版（占位符内部自行刷新）。
+            final key = '${ch.id}|${ch.content.length}|'
+                '${ills.map((e) => '${e.id}:${e.imgWidth}x${e.imgHeight}').join(',')}'
                 '|${size.width.toStringAsFixed(1)}x${size.height.toStringAsFixed(1)}'
                 '|${_settings.fontSize}|${_settings.lineHeight}';
-            if (key != _layoutKey && !_computing) {
+            if (key != _layoutKey && !_repaginating) {
               _layoutKey = key;
               Future.microtask(() => _recompute(paras, ills, size));
             }
-            if (_computing || _pages.isEmpty) {
+            if (_pages.isEmpty) {
               return const Center(child: CircularProgressIndicator());
             }
             _pageCtrl ??= PageController(initialPage: _curPage);
-            _scrollCtrl ??= ScrollController(
-                initialScrollOffset: _curPage * _pageHeight);
 
             if (_settings.pageMode == 'page') {
               _scrollCtrl = null;
-              return PageView.builder(
-                controller: _pageCtrl,
-                itemCount: _pages.length,
-                onPageChanged: _onPageChanged,
-                itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
-              );
+              return Stack(children: [
+                PageView.builder(
+                  controller: _pageCtrl,
+                  itemCount: _pages.length,
+                  onPageChanged: _onPageChanged,
+                  itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
+                ),
+                if (_repaginating)
+                  Positioned(
+                    top: 6, right: 16,
+                    child: Chip(
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: Colors.black45,
+                      label: const Text('排版中…',
+                          style: TextStyle(fontSize: 11, color: Colors.white)),
+                    ),
+                  ),
+              ]);
             } else {
               _pageCtrl = null;
               final ctrl = _scrollCtrl!;
@@ -579,12 +781,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   }
                 });
               }
-              return ListView.builder(
-                controller: ctrl,
-                itemExtent: _pageHeight,
-                itemCount: _pages.length,
-                itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
-              );
+              return Stack(children: [
+                ListView.builder(
+                  controller: ctrl,
+                  itemExtent: _pageHeight,
+                  itemCount: _pages.length,
+                  itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
+                ),
+                if (_repaginating)
+                  Positioned(
+                    top: 6, right: 16,
+                    child: Chip(
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: Colors.black45,
+                      label: const Text('排版中…',
+                          style: TextStyle(fontSize: 11, color: Colors.white)),
+                    ),
+                  ),
+              ]);
             }
           });
         },

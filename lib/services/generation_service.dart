@@ -18,7 +18,7 @@ import 'settings_service.dart';
 /// 队列条目的展示状态
 class GenTaskView {
   final int illustrationId;
-  final String promptPreview;
+  String promptPreview;
   String status; // queued | running | done | failed
   double progress; // 0..1
   String error;
@@ -95,6 +95,31 @@ class GenerationService extends ChangeNotifier {
       throw const GenerationException('LLM 未返回有效插图位置');
     }
     return created;
+  }
+
+  /// 选中文段生图：把所选文字作为单一提炼单元，插图锚定在 [endParagraphIndex] 段（选择结束的段落）之后
+  Future<int> generateSelection({
+    required Book book,
+    required Chapter chapter,
+    required String selectionText,
+    required int endParagraphIndex,
+    required List<String> history,
+  }) async {
+    final paras = chapter.content.split('\n');
+    if (endParagraphIndex < 0 || endParagraphIndex >= paras.length) {
+      throw const GenerationException('插入位置越界');
+    }
+    final trimmed = selectionText.trim();
+    if (trimmed.isEmpty) {
+      throw const GenerationException('选中文本为空');
+    }
+    return generateBatch(
+      book: book,
+      chapter: chapter,
+      pageParagraphs: [trimmed],
+      firstParagraphIndex: endParagraphIndex,
+      history: history,
+    );
   }
 
   /// 单段：长按某段落，仅对该段走同一条 LLM 管线
@@ -293,21 +318,74 @@ class GenerationService extends ChangeNotifier {
     final db = _requireDb();
     await (db.update(db.illustrations)..where((t) => t.id.equals(illustrationId)))
         .write(const IllustrationsCompanion(status: Value('pending'), error: Value('')));
-    // 队列里可能没有该条目（历史遗留），补一条
-    if (!queue.any((t) => t.illustrationId == illustrationId)) {
-      final ill = await (db.select(db.illustrations)..where((t) => t.id.equals(illustrationId))).getSingle();
-      queue.add(GenTaskView(illustrationId: illustrationId, promptPreview: _preview(ill.prompt)));
-    } else {
+    _ensureQueued(illustrationId);
+    notifyListeners();
+    if (!_running) _drain();
+  }
+
+  /// 修改提示词并重新生图
+  Future<void> updatePromptAndRegenerate(int illustrationId, String prompt) async {
+    final db = _requireDb();
+    await (db.update(db.illustrations)..where((t) => t.id.equals(illustrationId))).write(
+      IllustrationsCompanion(
+        prompt: Value(prompt.trim()),
+        status: const Value('pending'),
+        error: const Value(''),
+      ),
+    );
+    _ensureQueued(illustrationId, promptPreview: _preview(prompt));
+    notifyListeners();
+    if (!_running) _drain();
+  }
+
+  /// 仅重新生图（保持原提示词）
+  Future<void> regenerate(int illustrationId) => retryOne(illustrationId);
+
+  /// 删除插图（含落盘图片）
+  Future<void> deleteIllustration(int illustrationId) async {
+    final db = _requireDb();
+    final rows = await (db.select(db.illustrations)..where((t) => t.id.equals(illustrationId))).get();
+    for (final ill in rows) {
+      final p = ill.imagePath;
+      if (p != null && p.isNotEmpty) {
+        try {
+          final f = File(p);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+    }
+    await (db.delete(db.illustrations)..where((t) => t.id.equals(illustrationId))).go();
+    queue.removeWhere((t) => t.illustrationId == illustrationId);
+    notifyListeners();
+  }
+
+  void _ensureQueued(int illustrationId, {String? promptPreview}) {
+    if (queue.any((t) => t.illustrationId == illustrationId)) {
       for (final t in queue) {
-        if (t.illustrationId == illustrationId && t.status == 'failed') {
+        if (t.illustrationId == illustrationId) {
           t.status = 'queued';
           t.progress = 0;
           t.error = '';
+          if (promptPreview != null) t.promptPreview = promptPreview;
         }
       }
+      return;
     }
-    notifyListeners();
-    if (!_running) _drain();
+    queue.add(GenTaskView(
+      illustrationId: illustrationId,
+      promptPreview: promptPreview ?? '',
+      status: 'queued',
+    ));
+    // 没有 preview 时从库里补一条
+    if (promptPreview == null) {
+      final db = _requireDb();
+      (db.select(db.illustrations)..where((t) => t.id.equals(illustrationId))).getSingle().then((ill) {
+        for (final t in queue) {
+          if (t.illustrationId == illustrationId) t.promptPreview = _preview(ill.prompt);
+        }
+        notifyListeners();
+      });
+    }
   }
 
   AppDatabase _requireDb() {

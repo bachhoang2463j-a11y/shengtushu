@@ -1,6 +1,7 @@
 // 书架：导入 TXT/DOCX、阅读、设定说明、导出 PDF、删除
 import 'package:drift/drift.dart' show OrderingTerm, Value;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
 import '../data/database.dart';
@@ -23,6 +24,11 @@ class BookshelfScreen extends StatefulWidget {
 class _BookshelfScreenState extends State<BookshelfScreen> {
   bool _importing = false;
 
+  /// isolate 入口：文件解析（纯计算，不碰 UI）
+  static List<ImportedChapter> _importTask((String, String) args) {
+    return importBookFile(args.$1, chapterRegex: args.$2);
+  }
+
   Stream<List<Book>> _watchBooks() {
     return (widget.db.select(widget.db.books)
           ..orderBy([(t) => OrderingTerm.desc(t.createdAt)]))
@@ -40,8 +46,8 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
     final path = f.path!;
     setState(() => _importing = true);
     try {
-      final chapters =
-          importBookFile(path, chapterRegex: SettingsService.instance.chapterRegex);
+      // 解析放进 isolate，避免大文件卡主线程
+      final chapters = await compute(_importTask, (path, SettingsService.instance.chapterRegex));
       if (chapters.isEmpty) {
         throw const FormatException('未解析出任何内容');
       }
