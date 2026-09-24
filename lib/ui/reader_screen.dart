@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:drift/drift.dart' show OrderingTerm, Value;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../data/database.dart';
 import '../reader/paginator.dart';
@@ -273,7 +272,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     final paras = ch.content.split('\n');
-    var (anchor, offset) = _gen.locateSelectionEnd(paras, sel);
+    var (anchor, offset) = GenerationService.locateSelectionEnd(paras, sel);
     if (anchor < 0) {
       // 选区尾部无法定位（罕见），退化为当前页末段之后
       anchor = _currentPageParagraphs().$1;
@@ -297,25 +296,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (mounted) _showError(e.toString());
     } finally {
       if (mounted) setState(() => _generating = false);
-    }
-  }
-
-  Future<void> _generateSingle(int paragraphIndex) async {
-    final ch = _chapter;
-    if (ch == null || _book == null) return;
-    try {
-      await _gen.generateSingle(
-        book: _book!,
-        chapter: ch,
-        paragraphIndex: paragraphIndex,
-        history: _historyBefore(paragraphIndex),
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('已入队生成（插在第 ${paragraphIndex + 1} 段之后）')));
-      }
-    } catch (e) {
-      if (mounted) _showError(e.toString());
     }
   }
 

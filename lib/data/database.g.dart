@@ -936,6 +936,18 @@ class $IllustrationsTable extends Illustrations
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _anchorOffsetMeta = const VerificationMeta(
+    'anchorOffset',
+  );
+  @override
+  late final GeneratedColumn<int> anchorOffset = GeneratedColumn<int>(
+    'anchor_offset',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(-1),
+  );
   static const VerificationMeta _anchorHashMeta = const VerificationMeta(
     'anchorHash',
   );
@@ -1029,6 +1041,7 @@ class $IllustrationsTable extends Illustrations
     bookId,
     chapterId,
     afterParagraph,
+    anchorOffset,
     anchorHash,
     prompt,
     imagePath,
@@ -1079,6 +1092,15 @@ class $IllustrationsTable extends Illustrations
       );
     } else if (isInserting) {
       context.missing(_afterParagraphMeta);
+    }
+    if (data.containsKey('anchor_offset')) {
+      context.handle(
+        _anchorOffsetMeta,
+        anchorOffset.isAcceptableOrUnknown(
+          data['anchor_offset']!,
+          _anchorOffsetMeta,
+        ),
+      );
     }
     if (data.containsKey('anchor_hash')) {
       context.handle(
@@ -1157,6 +1179,10 @@ class $IllustrationsTable extends Illustrations
         DriftSqlType.int,
         data['${effectivePrefix}after_paragraph'],
       )!,
+      anchorOffset: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}anchor_offset'],
+      )!,
       anchorHash: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}anchor_hash'],
@@ -1203,6 +1229,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
   final int bookId;
   final int chapterId;
   final int afterParagraph;
+  final int anchorOffset;
   final String anchorHash;
   final String prompt;
   final String? imagePath;
@@ -1216,6 +1243,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     required this.bookId,
     required this.chapterId,
     required this.afterParagraph,
+    required this.anchorOffset,
     required this.anchorHash,
     required this.prompt,
     this.imagePath,
@@ -1232,6 +1260,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     map['book_id'] = Variable<int>(bookId);
     map['chapter_id'] = Variable<int>(chapterId);
     map['after_paragraph'] = Variable<int>(afterParagraph);
+    map['anchor_offset'] = Variable<int>(anchorOffset);
     map['anchor_hash'] = Variable<String>(anchorHash);
     map['prompt'] = Variable<String>(prompt);
     if (!nullToAbsent || imagePath != null) {
@@ -1251,6 +1280,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       bookId: Value(bookId),
       chapterId: Value(chapterId),
       afterParagraph: Value(afterParagraph),
+      anchorOffset: Value(anchorOffset),
       anchorHash: Value(anchorHash),
       prompt: Value(prompt),
       imagePath: imagePath == null && nullToAbsent
@@ -1274,6 +1304,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       bookId: serializer.fromJson<int>(json['bookId']),
       chapterId: serializer.fromJson<int>(json['chapterId']),
       afterParagraph: serializer.fromJson<int>(json['afterParagraph']),
+      anchorOffset: serializer.fromJson<int>(json['anchorOffset']),
       anchorHash: serializer.fromJson<String>(json['anchorHash']),
       prompt: serializer.fromJson<String>(json['prompt']),
       imagePath: serializer.fromJson<String?>(json['imagePath']),
@@ -1292,6 +1323,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       'bookId': serializer.toJson<int>(bookId),
       'chapterId': serializer.toJson<int>(chapterId),
       'afterParagraph': serializer.toJson<int>(afterParagraph),
+      'anchorOffset': serializer.toJson<int>(anchorOffset),
       'anchorHash': serializer.toJson<String>(anchorHash),
       'prompt': serializer.toJson<String>(prompt),
       'imagePath': serializer.toJson<String?>(imagePath),
@@ -1308,6 +1340,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     int? bookId,
     int? chapterId,
     int? afterParagraph,
+    int? anchorOffset,
     String? anchorHash,
     String? prompt,
     Value<String?> imagePath = const Value.absent(),
@@ -1321,6 +1354,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     bookId: bookId ?? this.bookId,
     chapterId: chapterId ?? this.chapterId,
     afterParagraph: afterParagraph ?? this.afterParagraph,
+    anchorOffset: anchorOffset ?? this.anchorOffset,
     anchorHash: anchorHash ?? this.anchorHash,
     prompt: prompt ?? this.prompt,
     imagePath: imagePath.present ? imagePath.value : this.imagePath,
@@ -1338,6 +1372,9 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       afterParagraph: data.afterParagraph.present
           ? data.afterParagraph.value
           : this.afterParagraph,
+      anchorOffset: data.anchorOffset.present
+          ? data.anchorOffset.value
+          : this.anchorOffset,
       anchorHash: data.anchorHash.present
           ? data.anchorHash.value
           : this.anchorHash,
@@ -1358,6 +1395,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
           ..write('bookId: $bookId, ')
           ..write('chapterId: $chapterId, ')
           ..write('afterParagraph: $afterParagraph, ')
+          ..write('anchorOffset: $anchorOffset, ')
           ..write('anchorHash: $anchorHash, ')
           ..write('prompt: $prompt, ')
           ..write('imagePath: $imagePath, ')
@@ -1376,6 +1414,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     bookId,
     chapterId,
     afterParagraph,
+    anchorOffset,
     anchorHash,
     prompt,
     imagePath,
@@ -1393,6 +1432,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
           other.bookId == this.bookId &&
           other.chapterId == this.chapterId &&
           other.afterParagraph == this.afterParagraph &&
+          other.anchorOffset == this.anchorOffset &&
           other.anchorHash == this.anchorHash &&
           other.prompt == this.prompt &&
           other.imagePath == this.imagePath &&
@@ -1408,6 +1448,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
   final Value<int> bookId;
   final Value<int> chapterId;
   final Value<int> afterParagraph;
+  final Value<int> anchorOffset;
   final Value<String> anchorHash;
   final Value<String> prompt;
   final Value<String?> imagePath;
@@ -1421,6 +1462,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     this.bookId = const Value.absent(),
     this.chapterId = const Value.absent(),
     this.afterParagraph = const Value.absent(),
+    this.anchorOffset = const Value.absent(),
     this.anchorHash = const Value.absent(),
     this.prompt = const Value.absent(),
     this.imagePath = const Value.absent(),
@@ -1435,6 +1477,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     required int bookId,
     required int chapterId,
     required int afterParagraph,
+    this.anchorOffset = const Value.absent(),
     required String anchorHash,
     required String prompt,
     this.imagePath = const Value.absent(),
@@ -1453,6 +1496,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     Expression<int>? bookId,
     Expression<int>? chapterId,
     Expression<int>? afterParagraph,
+    Expression<int>? anchorOffset,
     Expression<String>? anchorHash,
     Expression<String>? prompt,
     Expression<String>? imagePath,
@@ -1467,6 +1511,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
       if (bookId != null) 'book_id': bookId,
       if (chapterId != null) 'chapter_id': chapterId,
       if (afterParagraph != null) 'after_paragraph': afterParagraph,
+      if (anchorOffset != null) 'anchor_offset': anchorOffset,
       if (anchorHash != null) 'anchor_hash': anchorHash,
       if (prompt != null) 'prompt': prompt,
       if (imagePath != null) 'image_path': imagePath,
@@ -1483,6 +1528,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     Value<int>? bookId,
     Value<int>? chapterId,
     Value<int>? afterParagraph,
+    Value<int>? anchorOffset,
     Value<String>? anchorHash,
     Value<String>? prompt,
     Value<String?>? imagePath,
@@ -1497,6 +1543,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
       bookId: bookId ?? this.bookId,
       chapterId: chapterId ?? this.chapterId,
       afterParagraph: afterParagraph ?? this.afterParagraph,
+      anchorOffset: anchorOffset ?? this.anchorOffset,
       anchorHash: anchorHash ?? this.anchorHash,
       prompt: prompt ?? this.prompt,
       imagePath: imagePath ?? this.imagePath,
@@ -1522,6 +1569,9 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     }
     if (afterParagraph.present) {
       map['after_paragraph'] = Variable<int>(afterParagraph.value);
+    }
+    if (anchorOffset.present) {
+      map['anchor_offset'] = Variable<int>(anchorOffset.value);
     }
     if (anchorHash.present) {
       map['anchor_hash'] = Variable<String>(anchorHash.value);
@@ -1557,6 +1607,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
           ..write('bookId: $bookId, ')
           ..write('chapterId: $chapterId, ')
           ..write('afterParagraph: $afterParagraph, ')
+          ..write('anchorOffset: $anchorOffset, ')
           ..write('anchorHash: $anchorHash, ')
           ..write('prompt: $prompt, ')
           ..write('imagePath: $imagePath, ')
@@ -2618,6 +2669,7 @@ typedef $$IllustrationsTableCreateCompanionBuilder =
       required int bookId,
       required int chapterId,
       required int afterParagraph,
+      Value<int> anchorOffset,
       required String anchorHash,
       required String prompt,
       Value<String?> imagePath,
@@ -2633,6 +2685,7 @@ typedef $$IllustrationsTableUpdateCompanionBuilder =
       Value<int> bookId,
       Value<int> chapterId,
       Value<int> afterParagraph,
+      Value<int> anchorOffset,
       Value<String> anchorHash,
       Value<String> prompt,
       Value<String?> imagePath,
@@ -2669,6 +2722,11 @@ class $$IllustrationsTableFilterComposer
 
   ColumnFilters<int> get afterParagraph => $composableBuilder(
     column: $table.afterParagraph,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get anchorOffset => $composableBuilder(
+    column: $table.anchorOffset,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -2742,6 +2800,11 @@ class $$IllustrationsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get anchorOffset => $composableBuilder(
+    column: $table.anchorOffset,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<String> get anchorHash => $composableBuilder(
     column: $table.anchorHash,
     builder: (column) => ColumnOrderings(column),
@@ -2803,6 +2866,11 @@ class $$IllustrationsTableAnnotationComposer
 
   GeneratedColumn<int> get afterParagraph => $composableBuilder(
     column: $table.afterParagraph,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get anchorOffset => $composableBuilder(
+    column: $table.anchorOffset,
     builder: (column) => column,
   );
 
@@ -2868,6 +2936,7 @@ class $$IllustrationsTableTableManager
                 Value<int> bookId = const Value.absent(),
                 Value<int> chapterId = const Value.absent(),
                 Value<int> afterParagraph = const Value.absent(),
+                Value<int> anchorOffset = const Value.absent(),
                 Value<String> anchorHash = const Value.absent(),
                 Value<String> prompt = const Value.absent(),
                 Value<String?> imagePath = const Value.absent(),
@@ -2881,6 +2950,7 @@ class $$IllustrationsTableTableManager
                 bookId: bookId,
                 chapterId: chapterId,
                 afterParagraph: afterParagraph,
+                anchorOffset: anchorOffset,
                 anchorHash: anchorHash,
                 prompt: prompt,
                 imagePath: imagePath,
@@ -2896,6 +2966,7 @@ class $$IllustrationsTableTableManager
                 required int bookId,
                 required int chapterId,
                 required int afterParagraph,
+                Value<int> anchorOffset = const Value.absent(),
                 required String anchorHash,
                 required String prompt,
                 Value<String?> imagePath = const Value.absent(),
@@ -2909,6 +2980,7 @@ class $$IllustrationsTableTableManager
                 bookId: bookId,
                 chapterId: chapterId,
                 afterParagraph: afterParagraph,
+                anchorOffset: anchorOffset,
                 anchorHash: anchorHash,
                 prompt: prompt,
                 imagePath: imagePath,
