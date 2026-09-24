@@ -111,8 +111,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
     final items = <LayoutItem>[];
     for (var i = 0; i < paras.length; i++) {
-      items.add(TextItem(i, paras[i]));
-      for (final ill in byIdx[i] ?? const <Illustration>[]) {
+      final para = paras[i];
+      final list = byIdx[i] ?? const <Illustration>[];
+      if (list.isEmpty) {
+        items.add(TextItem(i, para));
+        continue;
+      }
+      // 段中插图：按偏移把段落拆成多段文本，图插在精确位置
+      list.sort((a, b) {
+        final oa = (a.anchorOffset < 0 || a.anchorOffset > para.length) ? para.length : a.anchorOffset;
+        final ob = (b.anchorOffset < 0 || b.anchorOffset > para.length) ? para.length : b.anchorOffset;
+        return oa.compareTo(ob);
+      });
+      var cursor = 0;
+      for (final ill in list) {
+        final off = (ill.anchorOffset < 0 || ill.anchorOffset > para.length) ? para.length : ill.anchorOffset;
+        if (off > cursor) {
+          items.add(TextItem(i, para.substring(cursor, off)));
+          cursor = off;
+        }
         final aspect = ill.imgHeight == 0 ? 16 / 9 : ill.imgWidth / ill.imgHeight;
         items.add(ImageItem(ImageBlock(
           i,
@@ -123,6 +140,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
           error: ill.error,
           prompt: ill.prompt,
         )));
+      }
+      if (cursor < para.length) {
+        items.add(TextItem(i, para.substring(cursor)));
       }
     }
     return items;
@@ -243,7 +263,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  /// 选中文段生图：插图插在「选择结束的段落」之后
+  /// 选中文段生图：只发所选文字，插图精确插在选区末尾（支持段中、跨段、不限长度）
   Future<void> _generateFromSelection() async {
     final ch = _chapter;
     if (ch == null || _book == null) return;
@@ -253,18 +273,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     final paras = ch.content.split('\n');
-    // 用选区尾部匹配所在段落
-    final tail = sel.length > 12 ? sel.substring(sel.length - 12) : sel;
-    final t = tail.replaceAll(RegExp(r'\s+'), '');
-    var anchor = -1;
-    for (var i = paras.length - 1; i >= 0; i--) {
-      if (paras[i].replaceAll(RegExp(r'\s+'), '').contains(t)) {
-        anchor = i;
-        break;
-      }
-    }
+    var (anchor, offset) = _gen.locateSelectionEnd(paras, sel);
     if (anchor < 0) {
-      anchor = _currentAnchorParagraph();
+      // 选区尾部无法定位（罕见），退化为当前页末段之后
+      anchor = _currentPageParagraphs().$1;
+      offset = -1;
     }
     setState(() => _generating = true);
     try {
@@ -273,11 +286,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
         chapter: ch,
         selectionText: sel,
         endParagraphIndex: anchor,
+        endCharOffset: offset,
         history: _historyBefore(anchor),
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('已创建 $n 个插图占位符（插在第 ${anchor + 1} 段之后），开始排队生成…')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('已创建 $n 个插图占位符（插在第 ${anchor + 1} 段${offset >= 0 ? '选区末尾' : '末尾'}）…')));
       }
     } catch (e) {
       if (mounted) _showError(e.toString());
@@ -322,31 +336,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  void _showParagraphMenu(int paragraphIndex, String text) {
-    showModalBottomSheet(
-      context: context,
-      builder: (c) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(
-            leading: const Icon(Icons.image_outlined),
-            title: Text('为本段生成插图（插在第 ${paragraphIndex + 1} 段后）'),
-            onTap: () {
-              Navigator.pop(c);
-              _generateSingle(paragraphIndex);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.copy_outlined),
-            title: const Text('复制段落'),
-            onTap: () {
-              Clipboard.setData(ClipboardData(text: text));
-              Navigator.pop(c);
-            },
-          ),
-        ]),
-      ),
-    );
-  }
 
   void _showImageMenu(ImageBlock b) {
     showModalBottomSheet(
@@ -485,16 +474,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         spacing,
-        GestureDetector(
-          onLongPress: () => _showParagraphMenu(t.paragraphIndex, t.text),
-          child: Text(
-            t.text,
-            textAlign: t.isLast ? TextAlign.start : TextAlign.justify,
-            style: TextStyle(
-              fontSize: _settings.fontSize,
-              height: _settings.lineHeight,
-              color: context.readerText,
-            ),
+        // 不加 GestureDetector：长按必须交给 SelectionArea 原生选字
+        Text(
+          t.text,
+          textAlign: t.isLast ? TextAlign.start : TextAlign.justify,
+          style: TextStyle(
+            fontSize: _settings.fontSize,
+            height: _settings.lineHeight,
+            color: context.readerText,
           ),
         ),
       ],
@@ -748,9 +735,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
               return const Center(child: CircularProgressIndicator());
             }
             _pageCtrl ??= PageController(initialPage: _curPage);
+            _scrollCtrl ??= ScrollController();
 
             if (_settings.pageMode == 'page') {
-              _scrollCtrl = null;
               return Stack(children: [
                 PageView.builder(
                   controller: _pageCtrl,
@@ -770,7 +757,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
               ]);
             } else {
-              _pageCtrl = null;
               final ctrl = _scrollCtrl!;
               if (!ctrl.hasClients) {
                 ctrl.addListener(() {
@@ -780,6 +766,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     _onPageChanged(page);
                   }
                 });
+                // 首次挂载：跳回当前阅读位置
+                WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(_curPage));
               }
               return Stack(children: [
                 ListView.builder(

@@ -64,6 +64,7 @@ class GenerationService extends ChangeNotifier {
     required List<String> pageParagraphs, // 当前页可见段落
     required int firstParagraphIndex, // 页首段落在本章中的序号（0-based）
     required List<String> history, // 前 N 段
+    int anchorOffset = -1, // 插图锚点：段内字符偏移（-1 = 段末）
   }) async {
     // ---- 预校验：任何一步不满足立即抛明确错误，不让用户面对"无反应" ----
     await _precheck();
@@ -88,7 +89,7 @@ class GenerationService extends ChangeNotifier {
     for (final ins in insertions) {
       final globalIdx = firstParagraphIndex + ins.afterParagraph - 1;
       if (globalIdx < 0 || globalIdx >= chapter.content.split('\n').length) continue;
-      await _createIllustration(book, chapter, globalIdx, ins.prompt);
+      await _createIllustration(book, chapter, globalIdx, ins.prompt, anchorOffset: anchorOffset);
       created++;
     }
     if (created == 0) {
@@ -97,12 +98,42 @@ class GenerationService extends ChangeNotifier {
     return created;
   }
 
-  /// 选中文段生图：把所选文字作为单一提炼单元，插图锚定在 [endParagraphIndex] 段（选择结束的段落）之后
+  /// 定位选区末尾（忽略空白差异）：返回 (段落序号, 段内字符偏移)。
+  /// 偏移含义：插图插在该段第 offset 个字符之后；找不到返回 (-1, -1)。
+  static (int, int) locateSelectionEnd(List<String> paras, String selection) {
+    String strip(String s) => s.replaceAll(RegExp(r'\s+'), '');
+    final target = strip(selection);
+    if (target.isEmpty) return (-1, -1);
+    final tail = target.length > 16 ? target.substring(target.length - 16) : target;
+    for (var i = paras.length - 1; i >= 0; i--) {
+      final stripped = strip(paras[i]);
+      final idx = stripped.lastIndexOf(tail);
+      if (idx >= 0) {
+        return (i, _mapStrippedToOriginal(paras[i], idx + tail.length));
+      }
+    }
+    return (-1, -1);
+  }
+
+  /// 把「去空白后的字符序号」映射回原文字符偏移
+  static int _mapStrippedToOriginal(String original, int strippedEnd) {
+    var count = 0;
+    for (var i = 0; i < original.length; i++) {
+      if (RegExp(r'\s').hasMatch(original[i])) continue;
+      count++;
+      if (count == strippedEnd) return i + 1;
+    }
+    return original.length;
+  }
+
+  /// 选中文段生图：只把所选文字发给 LLM，插图精确插在选区末尾（支持段中）。
+  /// [endParagraphIndex] / [endCharOffset] 来自 locateSelectionEnd。
   Future<int> generateSelection({
     required Book book,
     required Chapter chapter,
     required String selectionText,
     required int endParagraphIndex,
+    required int endCharOffset,
     required List<String> history,
   }) async {
     final paras = chapter.content.split('\n');
@@ -119,10 +150,11 @@ class GenerationService extends ChangeNotifier {
       pageParagraphs: [trimmed],
       firstParagraphIndex: endParagraphIndex,
       history: history,
+      anchorOffset: endCharOffset,
     );
   }
 
-  /// 单段：长按某段落，仅对该段走同一条 LLM 管线
+  /// 单段生图：锚定在该段末尾（等效于选中整段）
   Future<int> generateSingle({
     required Book book,
     required Chapter chapter,
@@ -142,7 +174,8 @@ class GenerationService extends ChangeNotifier {
     );
   }
 
-  Future<int> _createIllustration(Book book, Chapter chapter, int globalIdx, String prompt) async {
+  Future<int> _createIllustration(Book book, Chapter chapter, int globalIdx, String prompt,
+      {int anchorOffset = -1}) async {
     final db = _requireDb();
     final paras = chapter.content.split('\n');
     final hash = _hash(paras[globalIdx]);
@@ -152,6 +185,7 @@ class GenerationService extends ChangeNotifier {
       afterParagraph: globalIdx,
       anchorHash: hash,
       prompt: prompt,
+      anchorOffset: Value(anchorOffset),
       imgWidth: Value(_settings.genWidth),
       imgHeight: Value(_settings.genHeight),
     ));

@@ -27,12 +27,14 @@ class Chapters extends Table {
   TextColumn get content => text()();
 }
 
-/// 插图表：锚定到「章节 + 段落序号 + 段落内容哈希」双重锚点
+/// 插图表：锚定到「章节 + 段落序号 + 段内偏移 + 段落内容哈希」
 class Illustrations extends Table {
   IntColumn get id => integer().autoIncrement()();
   IntColumn get bookId => integer()();
   IntColumn get chapterId => integer()();
   IntColumn get afterParagraph => integer()();
+  // 段内字符偏移：-1 = 段末（旧行为）；≥0 = 插在该段第 N 个字符之后（段中插图）
+  IntColumn get anchorOffset => integer().withDefault(const Constant(-1))();
   TextColumn get anchorHash => text()();
   TextColumn get prompt => text()();
   TextColumn get imagePath => text().nullable()();
@@ -60,11 +62,16 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_open());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) => m.createAll(),
+    onUpgrade: (m, from, to) async {
+      if (from < 2) {
+        await m.addColumn(illustrations, illustrations.anchorOffset);
+      }
+    },
   );
 }
 
