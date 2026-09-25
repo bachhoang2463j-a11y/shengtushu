@@ -1023,6 +1023,18 @@ class $IllustrationsTable extends Illustrations
     requiredDuringInsert: false,
     defaultValue: const Constant(720),
   );
+  static const VerificationMeta _historyMeta = const VerificationMeta(
+    'history',
+  );
+  @override
+  late final GeneratedColumn<String> history = GeneratedColumn<String>(
+    'history',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('[]'),
+  );
   static const VerificationMeta _createdAtMeta = const VerificationMeta(
     'createdAt',
   );
@@ -1049,6 +1061,7 @@ class $IllustrationsTable extends Illustrations
     error,
     imgWidth,
     imgHeight,
+    history,
     createdAt,
   ];
   @override
@@ -1148,6 +1161,12 @@ class $IllustrationsTable extends Illustrations
         imgHeight.isAcceptableOrUnknown(data['img_height']!, _imgHeightMeta),
       );
     }
+    if (data.containsKey('history')) {
+      context.handle(
+        _historyMeta,
+        history.isAcceptableOrUnknown(data['history']!, _historyMeta),
+      );
+    }
     if (data.containsKey('created_at')) {
       context.handle(
         _createdAtMeta,
@@ -1211,6 +1230,10 @@ class $IllustrationsTable extends Illustrations
         DriftSqlType.int,
         data['${effectivePrefix}img_height'],
       )!,
+      history: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}history'],
+      )!,
       createdAt: attachedDatabase.typeMapping.read(
         DriftSqlType.dateTime,
         data['${effectivePrefix}created_at'],
@@ -1237,6 +1260,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
   final String error;
   final int imgWidth;
   final int imgHeight;
+  final String history;
   final DateTime createdAt;
   const Illustration({
     required this.id,
@@ -1251,6 +1275,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     required this.error,
     required this.imgWidth,
     required this.imgHeight,
+    required this.history,
     required this.createdAt,
   });
   @override
@@ -1270,6 +1295,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     map['error'] = Variable<String>(error);
     map['img_width'] = Variable<int>(imgWidth);
     map['img_height'] = Variable<int>(imgHeight);
+    map['history'] = Variable<String>(history);
     map['created_at'] = Variable<DateTime>(createdAt);
     return map;
   }
@@ -1290,6 +1316,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       error: Value(error),
       imgWidth: Value(imgWidth),
       imgHeight: Value(imgHeight),
+      history: Value(history),
       createdAt: Value(createdAt),
     );
   }
@@ -1312,6 +1339,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       error: serializer.fromJson<String>(json['error']),
       imgWidth: serializer.fromJson<int>(json['imgWidth']),
       imgHeight: serializer.fromJson<int>(json['imgHeight']),
+      history: serializer.fromJson<String>(json['history']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
     );
   }
@@ -1331,6 +1359,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       'error': serializer.toJson<String>(error),
       'imgWidth': serializer.toJson<int>(imgWidth),
       'imgHeight': serializer.toJson<int>(imgHeight),
+      'history': serializer.toJson<String>(history),
       'createdAt': serializer.toJson<DateTime>(createdAt),
     };
   }
@@ -1348,6 +1377,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     String? error,
     int? imgWidth,
     int? imgHeight,
+    String? history,
     DateTime? createdAt,
   }) => Illustration(
     id: id ?? this.id,
@@ -1362,6 +1392,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     error: error ?? this.error,
     imgWidth: imgWidth ?? this.imgWidth,
     imgHeight: imgHeight ?? this.imgHeight,
+    history: history ?? this.history,
     createdAt: createdAt ?? this.createdAt,
   );
   Illustration copyWithCompanion(IllustrationsCompanion data) {
@@ -1384,6 +1415,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
       error: data.error.present ? data.error.value : this.error,
       imgWidth: data.imgWidth.present ? data.imgWidth.value : this.imgWidth,
       imgHeight: data.imgHeight.present ? data.imgHeight.value : this.imgHeight,
+      history: data.history.present ? data.history.value : this.history,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
     );
   }
@@ -1403,6 +1435,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
           ..write('error: $error, ')
           ..write('imgWidth: $imgWidth, ')
           ..write('imgHeight: $imgHeight, ')
+          ..write('history: $history, ')
           ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
@@ -1422,6 +1455,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
     error,
     imgWidth,
     imgHeight,
+    history,
     createdAt,
   );
   @override
@@ -1440,6 +1474,7 @@ class Illustration extends DataClass implements Insertable<Illustration> {
           other.error == this.error &&
           other.imgWidth == this.imgWidth &&
           other.imgHeight == this.imgHeight &&
+          other.history == this.history &&
           other.createdAt == this.createdAt);
 }
 
@@ -1456,6 +1491,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
   final Value<String> error;
   final Value<int> imgWidth;
   final Value<int> imgHeight;
+  final Value<String> history;
   final Value<DateTime> createdAt;
   const IllustrationsCompanion({
     this.id = const Value.absent(),
@@ -1470,6 +1506,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     this.error = const Value.absent(),
     this.imgWidth = const Value.absent(),
     this.imgHeight = const Value.absent(),
+    this.history = const Value.absent(),
     this.createdAt = const Value.absent(),
   });
   IllustrationsCompanion.insert({
@@ -1485,6 +1522,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     this.error = const Value.absent(),
     this.imgWidth = const Value.absent(),
     this.imgHeight = const Value.absent(),
+    this.history = const Value.absent(),
     this.createdAt = const Value.absent(),
   }) : bookId = Value(bookId),
        chapterId = Value(chapterId),
@@ -1504,6 +1542,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     Expression<String>? error,
     Expression<int>? imgWidth,
     Expression<int>? imgHeight,
+    Expression<String>? history,
     Expression<DateTime>? createdAt,
   }) {
     return RawValuesInsertable({
@@ -1519,6 +1558,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
       if (error != null) 'error': error,
       if (imgWidth != null) 'img_width': imgWidth,
       if (imgHeight != null) 'img_height': imgHeight,
+      if (history != null) 'history': history,
       if (createdAt != null) 'created_at': createdAt,
     });
   }
@@ -1536,6 +1576,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     Value<String>? error,
     Value<int>? imgWidth,
     Value<int>? imgHeight,
+    Value<String>? history,
     Value<DateTime>? createdAt,
   }) {
     return IllustrationsCompanion(
@@ -1551,6 +1592,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
       error: error ?? this.error,
       imgWidth: imgWidth ?? this.imgWidth,
       imgHeight: imgHeight ?? this.imgHeight,
+      history: history ?? this.history,
       createdAt: createdAt ?? this.createdAt,
     );
   }
@@ -1594,6 +1636,9 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
     if (imgHeight.present) {
       map['img_height'] = Variable<int>(imgHeight.value);
     }
+    if (history.present) {
+      map['history'] = Variable<String>(history.value);
+    }
     if (createdAt.present) {
       map['created_at'] = Variable<DateTime>(createdAt.value);
     }
@@ -1615,6 +1660,7 @@ class IllustrationsCompanion extends UpdateCompanion<Illustration> {
           ..write('error: $error, ')
           ..write('imgWidth: $imgWidth, ')
           ..write('imgHeight: $imgHeight, ')
+          ..write('history: $history, ')
           ..write('createdAt: $createdAt')
           ..write(')'))
         .toString();
@@ -2677,6 +2723,7 @@ typedef $$IllustrationsTableCreateCompanionBuilder =
       Value<String> error,
       Value<int> imgWidth,
       Value<int> imgHeight,
+      Value<String> history,
       Value<DateTime> createdAt,
     });
 typedef $$IllustrationsTableUpdateCompanionBuilder =
@@ -2693,6 +2740,7 @@ typedef $$IllustrationsTableUpdateCompanionBuilder =
       Value<String> error,
       Value<int> imgWidth,
       Value<int> imgHeight,
+      Value<String> history,
       Value<DateTime> createdAt,
     });
 
@@ -2762,6 +2810,11 @@ class $$IllustrationsTableFilterComposer
 
   ColumnFilters<int> get imgHeight => $composableBuilder(
     column: $table.imgHeight,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get history => $composableBuilder(
+    column: $table.history,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -2840,6 +2893,11 @@ class $$IllustrationsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get history => $composableBuilder(
+    column: $table.history,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<DateTime> get createdAt => $composableBuilder(
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
@@ -2897,6 +2955,9 @@ class $$IllustrationsTableAnnotationComposer
   GeneratedColumn<int> get imgHeight =>
       $composableBuilder(column: $table.imgHeight, builder: (column) => column);
 
+  GeneratedColumn<String> get history =>
+      $composableBuilder(column: $table.history, builder: (column) => column);
+
   GeneratedColumn<DateTime> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
 }
@@ -2944,6 +3005,7 @@ class $$IllustrationsTableTableManager
                 Value<String> error = const Value.absent(),
                 Value<int> imgWidth = const Value.absent(),
                 Value<int> imgHeight = const Value.absent(),
+                Value<String> history = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
               }) => IllustrationsCompanion(
                 id: id,
@@ -2958,6 +3020,7 @@ class $$IllustrationsTableTableManager
                 error: error,
                 imgWidth: imgWidth,
                 imgHeight: imgHeight,
+                history: history,
                 createdAt: createdAt,
               ),
           createCompanionCallback:
@@ -2974,6 +3037,7 @@ class $$IllustrationsTableTableManager
                 Value<String> error = const Value.absent(),
                 Value<int> imgWidth = const Value.absent(),
                 Value<int> imgHeight = const Value.absent(),
+                Value<String> history = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
               }) => IllustrationsCompanion.insert(
                 id: id,
@@ -2988,6 +3052,7 @@ class $$IllustrationsTableTableManager
                 error: error,
                 imgWidth: imgWidth,
                 imgHeight: imgHeight,
+                history: history,
                 createdAt: createdAt,
               ),
           withReferenceMapper: (p0) => p0

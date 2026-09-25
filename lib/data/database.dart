@@ -43,6 +43,9 @@ class Illustrations extends Table {
   // 占位符宽高比：pending 阶段用生成参数预估，完成后写入实际尺寸
   IntColumn get imgWidth => integer().withDefault(const Constant(1280))();
   IntColumn get imgHeight => integer().withDefault(const Constant(720))();
+  // 历史版本图片路径（JSON 数组，旧→新）；imagePath 为当前展示图。
+  // 重新生图时旧图移入这里，不删除；阅读器左右点按可在多张间切换。
+  TextColumn get history => text().withDefault(const Constant('[]'))();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
 }
 
@@ -62,7 +65,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_open());
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -70,6 +73,9 @@ class AppDatabase extends _$AppDatabase {
     onUpgrade: (m, from, to) async {
       if (from < 2) {
         await m.addColumn(illustrations, illustrations.anchorOffset);
+      }
+      if (from < 3) {
+        await m.addColumn(illustrations, illustrations.history);
       }
     },
   );

@@ -61,6 +61,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _generating = false;
   String _selectionText = '';
 
+  // 插图历史回看偏移：0 = 最新一张，1 = 上一张（更旧），仅阅读会话内有效
+  final Map<int, int> _histOffset = {};
+
   // 沉浸式交互状态
   bool _overlayVisible = false;
   bool _stylePanelVisible = false;
@@ -162,6 +165,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           imagePath: ill.imagePath,
           error: ill.error,
           prompt: ill.prompt,
+          history: GenerationService.decodeHistory(ill.history),
         )));
       }
       if (cursor < para.length) {
@@ -302,14 +306,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _handleTapUp(TapUpDetails d) {
     // 有活动选区时先让 SelectionArea 处理（收起菜单），不翻页
     if (_selectionText.isNotEmpty) return;
-    final frac = d.localPosition.dx / MediaQuery.sizeOf(context).width;
-    if (frac < 0.25) {
-      _pageShift(-1);
-    } else if (frac > 0.75) {
-      _pageShift(1);
-    } else {
-      _toggleOverlay();
+    // 只有左右翻页模式启用三分区；滚动模式点哪都只呼出/收起控制栏（避免误触翻动）
+    if (_settings.pageMode == 'page') {
+      final frac = d.localPosition.dx / MediaQuery.sizeOf(context).width;
+      if (frac < 0.25) {
+        _pageShift(-1);
+        return;
+      }
+      if (frac > 0.75) {
+        _pageShift(1);
+        return;
+      }
     }
+    _toggleOverlay();
   }
 
   void _pageShift(int delta) {
@@ -635,6 +644,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Future<void> _generatePage() async {
     final ch = _chapter;
     if (ch == null || _book == null) return;
+    if (_generating) return; // 防重复触发
     final (first, pageParas) = _currentPageParagraphs();
     if (pageParas.isEmpty) {
       _showError('当前页没有可用的段落，翻到有正文的一页再试。');
@@ -654,7 +664,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             SnackBar(content: Text('已创建 $n 个插图占位符（插在第 ${first + 1} 段之后），开始排队生成…')));
       }
     } catch (e) {
-      if (mounted) _showError(e.toString());
+      if (mounted) _showError(_friendlyError(e));
     } finally {
       if (mounted) setState(() => _generating = false);
     }
@@ -692,10 +702,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
             content: Text('已创建 $n 个插图占位符（插在第 ${anchor + 1} 段${offset >= 0 ? '选区末尾' : '末尾'}）…')));
       }
     } catch (e) {
-      if (mounted) _showError(e.toString());
+      if (mounted) _showError(_friendlyError(e));
     } finally {
       if (mounted) setState(() => _generating = false);
     }
+  }
+
+  /// 把底层网络异常翻译成可操作的提示（如 HandshakeException 多为代理/系统时间问题）
+  String _friendlyError(Object e) {
+    final s = e.toString();
+    if (s.contains('HandshakeException')) {
+      return '网络握手失败（HandshakeException），无法与服务器建立 HTTPS 连接。\n\n'
+          '检查：① 手机网络是否可用 ② 代理 / VPN 是否拦截了 API 域名 ③ 系统时间是否正确';
+    }
+    return s;
   }
 
   void _showError(String message) {
@@ -981,6 +1001,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  /// 插图历史切换：dir=+1 向更旧（左侧），dir=-1 向更新（右侧）；
+  /// 已是最新还向右 → 触发重新生图（旧图自动进历史）；已是最旧还向左 → 无反应
+  void _stepImage(int illustrationId, int total, int dir) {
+    final next = (_histOffset[illustrationId] ?? 0) + dir;
+    if (next < 0) {
+      _gen.regenerate(illustrationId);
+      return;
+    }
+    if (next > total - 1) return;
+    setState(() => _histOffset[illustrationId] = next);
+  }
+
   Widget _renderImage(ImageBlock b, double fullWidth) {
     // 实时状态：排版缓存里只有布局信息，状态/路径以数据库最新值为准（进度变化不触发重排版）
     final live = _illsById[b.illustrationId];
@@ -989,13 +1021,38 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final error = live?.error ?? b.error;
     final prompt = live?.prompt ?? b.prompt;
     final h = (fullWidth / b.aspect.clamp(0.2, 5.0)).clamp(60.0, _pageHeight);
+    // 多版本：history（旧→新）+ 当前图；offset 0 = 最新一张。
+    // DB 实时值优先（原始 JSON 需解码），排版缓存里已是解码后的列表。
+    final List<String> hist;
+    final l = live;
+    if (l != null) {
+      hist = GenerationService.decodeHistory(l.history);
+    } else {
+      hist = b.history;
+    }
+    final paths = [
+      ...hist,
+      if (imagePath != null && imagePath.isNotEmpty) imagePath,
+    ];
+    final histTotal = paths.length;
+    final histOffset = histTotal == 0 ? 0 : (_histOffset[b.illustrationId] ?? 0).clamp(0, histTotal - 1);
     Widget child;
     switch (status) {
       case 'done':
-        child = InkWell(
-          onTap: () => Navigator.push(context, MaterialPageRoute(
-              builder: (_) => ImageViewerScreen(
-                  imagePath: imagePath ?? '', prompt: prompt))),
+        child = GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTapUp: (d) {
+            final frac = d.localPosition.dx / fullWidth;
+            if (frac < 0.2) {
+              _stepImage(b.illustrationId, histTotal, 1); // 左侧：上一张（更旧）
+            } else if (frac >= 0.8) {
+              _stepImage(b.illustrationId, histTotal, -1); // 右侧：下一张，已最新则触发重新生图
+            } else {
+              Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => ImageViewerScreen(
+                      imagePath: imagePath ?? '', prompt: prompt)));
+            }
+          },
           child: Image.file(
             File(imagePath ?? ''),
             fit: BoxFit.cover,
@@ -1054,6 +1111,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         imagePath: imagePath,
         error: error,
         prompt: prompt,
+        history: paths,
       )),
       child: Stack(children: [
         Container(
@@ -1084,8 +1142,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: Row(mainAxisSize: MainAxisSize.min, children: [
               const Icon(Icons.auto_awesome, size: 10, color: Colors.white),
               const SizedBox(width: 3),
-              Text('第 ${b.paragraphIndex + 1} 段',
-                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white)),
+              Text(
+                '第 ${b.paragraphIndex + 1} 段${histTotal > 1 ? ' · ${histTotal - histOffset}/$histTotal' : ''}',
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white),
+              ),
             ]),
           ),
         ),
@@ -1250,19 +1310,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final paras = ch.content.split('\n');
     return Scaffold(
       backgroundColor: context.readerBackground,
-      floatingActionButton: (_settings.showGenFab && !_generating)
-          ? FloatingActionButton.extended(
-              onPressed: _generatePage,
-              icon: const Icon(Icons.auto_awesome),
-              label: const Text('本页生图'),
-            )
-          : (_generating
-              ? const FloatingActionButton(
-                  onPressed: null,
-                  child: SizedBox(
-                      width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5)),
-                )
-              : null),
       body: StreamBuilder<List<Illustration>>(
         stream: _illsStream,
         builder: (context, illSnap) {

@@ -99,6 +99,29 @@ void main() {
     expect(validateDefaultMapping(kDefaultZImageMapping), isTrue);
   });
 
+  test('重新生图种子：无种子映射时 %seed% 也随机（避免同种子返回原图）', () {
+    final client = ComfyUIClient();
+    final wf = {
+      '10': {'inputs': {'seed': '%seed%'}, 'class_type': 'KSampler'},
+    };
+    final out1 = client.prepareWorkflow(
+        workflow: wf, mapping: const WorkflowMapping(), positive: 'p', autoRandomSeed: true);
+    final out2 = client.prepareWorkflow(
+        workflow: wf, mapping: const WorkflowMapping(), positive: 'p', autoRandomSeed: true);
+    final s1 = (out1['10'] as Map)['inputs']['seed'];
+    final s2 = (out2['10'] as Map)['inputs']['seed'];
+    expect(s1, isA<num>());
+    expect(s1, isNot(0), reason: '未映射种子节点时不应固定为 0');
+    expect(s2, isNot(s1), reason: '两次生成种子必须不同');
+  });
+
+  test('插图历史编解码：roundtrip 与容错', () {
+    expect(GenerationService.decodeHistory('["a","b"]'), ['a', 'b']);
+    expect(GenerationService.decodeHistory('not json'), isEmpty);
+    expect(GenerationService.decodeHistory('[1,2]'), isEmpty);
+    expect(GenerationService.encodeHistory(['x', 'y']), '["x","y"]');
+  });
+
   test('选区末尾定位：短选区优先视口附近，跨段选区尾部截短匹配', () {
     final paras = [
       '　　张飞倒提着丈八蛇矛走向大营。', // 0

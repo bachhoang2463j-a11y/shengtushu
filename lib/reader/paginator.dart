@@ -26,8 +26,9 @@ class ImageBlock extends PageBlock {
   final double aspect; // width / height
   final String error;
   final String prompt;
+  final List<String> history; // 历史版本图片路径（旧→新），排版缓存快照
   const ImageBlock(super.paragraphIndex, {required this.illustrationId, required this.status,
-      required this.aspect, this.imagePath, this.error = '', this.prompt = ''});
+      required this.aspect, this.imagePath, this.error = '', this.prompt = '', this.history = const []});
 }
 
 class ReaderPage {

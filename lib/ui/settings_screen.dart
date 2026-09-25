@@ -83,13 +83,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onSelectionChanged: (v) => _s.setPageMode(v.first),
             ),
           ),
-          SwitchListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-            title: const Text('显示「本页生图」按钮'),
-            subtitle: const Text('默认关闭，避免遮挡正文；关闭时可用选中文段的方式生图'),
-            value: _s.showGenFab,
-            onChanged: (v) => _s.setShowGenFab(v),
-          ),
           SettingRow(
             title: '章节分割正则',
             subtitle: _s.chapterRegex,

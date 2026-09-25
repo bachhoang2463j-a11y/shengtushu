@@ -42,6 +42,18 @@ class GenerationService extends ChangeNotifier {
   GenerationService._();
   static final GenerationService instance = GenerationService._();
 
+  /// illustrations.history 列是 JSON 数组字符串（旧→新），这里统一编解码
+  static List<String> decodeHistory(String raw) {
+    try {
+      final l = jsonDecode(raw);
+      return [if (l is List) for (final e in l) if (e is String) e];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  static String encodeHistory(List<String> list) => jsonEncode(list);
+
   final _llm = LlmClient();
   final _prompt = PromptService();
   final _comfy = ComfyUIClient();
@@ -323,10 +335,15 @@ class GenerationService extends ChangeNotifier {
           codec.dispose();
         } catch (_) {}
 
+        // 旧图不删，移入历史版本；新图成为当前展示图
+        final hist = [...decodeHistory(ill.history)];
+        final old = ill.imagePath;
+        if (old != null && old.isNotEmpty && old != path) hist.add(old);
         await (db.update(db.illustrations)..where((t) => t.id.equals(task.illustrationId))).write(
           IllustrationsCompanion(
             status: const Value('done'),
             imagePath: Value(path),
+            history: Value(encodeHistory(hist)),
             imgWidth: Value(w),
             imgHeight: Value(h),
             error: const Value(''),
@@ -406,13 +423,16 @@ class GenerationService extends ChangeNotifier {
   /// 仅重新生图（保持原提示词）
   Future<void> regenerate(int illustrationId) => retryOne(illustrationId);
 
-  /// 删除插图（含落盘图片）
+  /// 删除插图（含当前图与全部历史版本图片）
   Future<void> deleteIllustration(int illustrationId) async {
     final db = _requireDb();
     final rows = await (db.select(db.illustrations)..where((t) => t.id.equals(illustrationId))).get();
     for (final ill in rows) {
-      final p = ill.imagePath;
-      if (p != null && p.isNotEmpty) {
+      final files = [
+        if (ill.imagePath != null && ill.imagePath!.isNotEmpty) ill.imagePath!,
+        ...decodeHistory(ill.history),
+      ];
+      for (final p in files) {
         try {
           final f = File(p);
           if (await f.exists()) await f.delete();

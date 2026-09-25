@@ -143,9 +143,12 @@ class ComfyUIClient {
     int? seed,
     bool autoRandomSeed = true,
   }) {
-    final actualSeed = (autoRandomSeed && mapping.seed != null)
-        ? (Random().nextInt(1 << 30) * 4294967296 + Random().nextInt(1 << 30))
-        : seed;
+    // 种子：显式指定优先；未指定时随机。ComfyUI 同种子产出完全相同的图，
+    // 映射缺种子节点或工作流用 %seed% 时若落到固定 0，会导致「重新生图」返回原图。
+    final actualSeed = seed ??
+        ((autoRandomSeed || mapping.seed == null)
+            ? Random().nextInt(1 << 30) * 4294967296 + Random().nextInt(1 << 30)
+            : null);
     var wf = replaceVariables(workflow, {
       'prompt': positive,
       'negative': negative ?? '',
