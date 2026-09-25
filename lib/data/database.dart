@@ -64,6 +64,9 @@ class Workflows extends Table {
 class AppDatabase extends _$AppDatabase {
   AppDatabase() : super(_open());
 
+  /// 测试用：自定义执行器（如 NativeDatabase.memory()），不触碰真实数据库
+  AppDatabase.forTest(super.executor);
+
   @override
   int get schemaVersion => 3;
 

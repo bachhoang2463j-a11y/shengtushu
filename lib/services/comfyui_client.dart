@@ -303,6 +303,8 @@ class ComfyUIClient {
 
     try {
       channel = WebSocketChannel.connect(wsUri);
+      // ready 失败与 stream onError 同源；不 catch 会成为未处理异步错误（污染全局 Zone）
+      unawaited(channel.ready.catchError((Object _) {}));
       sub = channel.stream.listen(
         (message) {
           if (message is! String) return;

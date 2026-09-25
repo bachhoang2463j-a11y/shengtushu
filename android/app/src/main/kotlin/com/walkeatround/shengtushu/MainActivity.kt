@@ -36,13 +36,16 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
         captureViewIntent(intent)
+        // 引擎默认把 ACTION_VIEW 的 data 当命名路由 pushRoute，Dart 侧并无该路由会抛异常；
+        // 文件交给上面的 MethodChannel 处理，传给引擎的 intent 清掉 action/data
+        setIntent(Intent(intent).setData(null).setAction(null))
+        super.onCreate(savedInstanceState)
     }
 
     override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
         captureViewIntent(intent)
+        super.onNewIntent(Intent(intent).setData(null).setAction(null))
         // 热启动：活动已在栈顶，主动推给 Dart
         if (pendingUri != null) {
             channel?.invokeMethod("onViewIntent", null)

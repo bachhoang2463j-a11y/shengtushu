@@ -5,17 +5,40 @@
 import base64
 import json
 import os
+import struct
+import sys
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-PORT = int(os.sys.argv[1]) if len(os.sys.argv) > 1 else 8188
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8188
 SUBMIT_DIR = os.path.join(os.path.dirname(__file__), '..', 'build', 'mock')
 os.makedirs(SUBMIT_DIR, exist_ok=True)
 
 # 1x1 红色 PNG
 PNG_1PX = base64.b64decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+
+
+def make_png(rgb, size=16):
+    """纯 Python 生成 size x size 纯色 PNG（无第三方依赖），供不同任务返回不同颜色。"""
+    r, g, b = rgb
+    row = b'\x00' + bytes([r, g, b] * size)
+    raw = row * size
+
+    def chunk(typ, data):
+        return (struct.pack('>I', len(data)) + typ + data
+                + struct.pack('>I', zlib.crc32(typ + data) & 0xffffffff))
+
+    ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr)
+            + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+
+
+def color_for_pid(n):
+    """由任务编号推导稳定且互不相同的颜色。"""
+    return ((n * 61 + 40) % 256, (n * 97 + 80) % 256, (n * 157 + 120) % 256)
 
 STATE = {'prompt_id': 0, 'done_at': {}}
 
@@ -48,11 +71,20 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({})
         elif path.startswith('/view'):
+            # 按文件名里的任务编号返回不同颜色的图：不同任务颜色不同，便于实测区分历史版本
+            fname = ''
+            if 'filename=' in self.path:
+                fname = self.path.split('filename=', 1)[1].split('&', 1)[0]
+            digits = ''.join(ch for ch in fname if ch.isdigit())
+            if digits:
+                body = make_png(color_for_pid(int(digits)))
+            else:
+                body = PNG_1PX
             self.send_response(200)
             self.send_header('Content-Type', 'image/png')
-            self.send_header('Content-Length', str(len(PNG_1PX)))
+            self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(PNG_1PX)
+            self.wfile.write(body)
         elif path == '/ws':
             # 故意不支持 WS → 客户端自动降级轮询
             self.close_connection = True
@@ -80,8 +112,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._json({'error': str(e)}, 500)
         elif path == '/v1/chat/completions':
-            content = ('分析：测试\n[IMG_GEN]masterpiece, best quality, 1girl, long hair, '
-                       'standing, outdoor[/IMG_GEN]')
+            content = ('分析：测试\n```json\n{"insertions": [{"after_paragraph": 1, "prompt": "masterpiece, best quality, 1girl, long hair, standing, outdoor"}]}\n```')
             self._json({'id': 'mock', 'choices': [
                 {'index': 0, 'message': {'role': 'assistant', 'content': content}}]})
         elif path == '/interrupt':

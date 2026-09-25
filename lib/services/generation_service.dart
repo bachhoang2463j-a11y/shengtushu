@@ -328,10 +328,8 @@ class GenerationService extends ChangeNotifier {
 
         // 读实际尺寸回填
         int w = ill.imgWidth, h = ill.imgHeight;
-        List<int>? newBytes;
         try {
           final bytes = await File(path).readAsBytes();
-          newBytes = bytes;
           final codec = await ui.instantiateImageCodec(bytes);
           final frame = await codec.getNextFrame();
           w = frame.image.width;
@@ -340,25 +338,8 @@ class GenerationService extends ChangeNotifier {
           codec.dispose();
         } catch (_) {}
 
+        // 旧图不删，移入历史版本；新图成为当前展示图（每次生成必记录一张）
         final old = ill.imagePath;
-        // 生成结果与当前图内容完全相同（如种子未变的重复输出）→ 丢弃新文件，不产生垃圾历史
-        if (newBytes != null && old != null && old.isNotEmpty) {
-          try {
-            if (_bytesEqual(await File(old).readAsBytes(), newBytes)) {
-              try {
-                await File(path).delete();
-              } catch (_) {}
-              await (db.update(db.illustrations)..where((t) => t.id.equals(task.illustrationId)))
-                  .write(const IllustrationsCompanion(status: Value('done'), error: Value('')));
-              task.status = 'done';
-              task.progress = 1;
-              notifyListeners();
-              return;
-            }
-          } catch (_) {}
-        }
-
-        // 旧图不删，移入历史版本；新图成为当前展示图
         final hist = [...decodeHistory(ill.history)];
         if (old != null && old.isNotEmpty && old != path) hist.add(old);
         await (db.update(db.illustrations)..where((t) => t.id.equals(task.illustrationId))).write(
@@ -504,14 +485,6 @@ class GenerationService extends ChangeNotifier {
       }
     }
     notifyListeners();
-  }
-
-  static bool _bytesEqual(List<int> a, List<int> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
   }
 
   void _ensureQueued(int illustrationId, {String? promptPreview}) {
