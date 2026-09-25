@@ -5,9 +5,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:drift/native.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:shengtushu/data/database.dart';
+import 'package:shengtushu/ui/image_viewer_screen.dart';
+import 'package:shengtushu/ui/reader_screen.dart';
 import 'package:shengtushu/services/default_workflow.dart';
 import 'package:shengtushu/services/generation_service.dart';
 import 'package:shengtushu/services/settings_service.dart';
@@ -208,6 +211,57 @@ void main() {
     // 每次生成种子必须不同
     expect(mock.seeds, hasLength(3));
     expect(mock.seeds.toSet(), hasLength(3), reason: '种子必须每次随机');
+  });
+
+  testWidgets('阅读器渲染层：左右点按切换历史版本时显示的图片真实变化', (tester) async {
+    final gen = GenerationService.instance;
+    await gen.generateSelection(
+      book: book,
+      chapter: chapter,
+      selectionText: '　　第 1 段测试正文。',
+      endParagraphIndex: 1,
+      endCharOffset: -1,
+      history: const [],
+    );
+    await waitUntilIdle();
+    await gen.regenerate(1);
+    await waitUntilIdle();
+    final ill = await (db.select(db.illustrations)..where((t) => t.id.equals(1))).getSingle();
+    final hist = GenerationService.decodeHistory(ill.history);
+    expect(hist, hasLength(1));
+    final paths = [...hist, ill.imagePath!];
+
+    await tester.pumpWidget(MaterialApp(home: ReaderScreen(db: db, bookId: book.id)));
+    Image imageOf() => tester.widget<Image>(find.byType(Image).first);
+    // 等流式排版与图片 widget 出现
+    for (var i = 0; i < 30; i++) {
+      await binding.runAsync(() async => Future<void>.delayed(const Duration(milliseconds: 100)));
+      await tester.pump();
+      if (find.byType(Image).evaluate().isNotEmpty) break;
+    }
+    expect(find.byType(Image), findsOneWidget);
+    // 初始显示最新一张
+    expect((imageOf().image as FileImage).file.path, paths[1]);
+
+    final gestureFinder = find.byKey(const ValueKey('ill-gesture-1'));
+    expect(gestureFinder, findsOneWidget);
+    final bounds = tester.getRect(gestureFinder);
+
+    // 左 10% 点按 → 切到更旧的历史图
+    await tester.tapAt(bounds.centerLeft + Offset(bounds.width * 0.1, 0));
+    await tester.pump();
+    expect((imageOf().image as FileImage).file.path, paths[0], reason: '左点应显示历史图');
+
+    // 右 10% 点按 → 切回最新
+    await tester.tapAt(bounds.centerRight - Offset(bounds.width * 0.1, 0));
+    await tester.pump();
+    expect((imageOf().image as FileImage).file.path, paths[1], reason: '右点应切回最新图');
+
+    // 中间点按 → 打开大图查看器
+    await tester.tap(find.byKey(const ValueKey('ill-gesture-1')));
+    await tester.pumpAndSettle();
+    expect(find.byType(ImageViewerScreen), findsOneWidget);
+    expect(find.text('插图'), findsOneWidget);
   });
 
   test('多选删除：删历史图与当前图，当前图被删时提升最近历史', () async {

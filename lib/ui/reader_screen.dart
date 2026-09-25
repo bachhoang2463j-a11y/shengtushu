@@ -761,7 +761,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  /// 图片管理面板：本书全部插图（含历史版本），点按跳段落，多选删除
+  /// 图片管理面板：本书全部插图（含历史版本），点按查看该图并跳段落，多选删除
   void _showImageManager() {
     showModalBottomSheet(
       context: context,
@@ -769,13 +769,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
       builder: (c) => _ImageManagerSheet(
         db: widget.db,
         bookId: widget.bookId,
-        onJump: (para) {
+        onOpen: (it) {
           Navigator.pop(c);
-          _jumpToParagraph(para);
+          _viewHistoryImage(it.illId, it.path);
+          _jumpToParagraph(it.para);
         },
         onDelete: _gen.deleteIllustrationImages,
       ),
     );
+  }
+
+  /// 图片管理点按：把该插图在阅读器里切换到被点的这张
+  void _viewHistoryImage(int illId, String path) {
+    final live = _illsById[illId];
+    if (live == null) return;
+    final paths = [
+      ...GenerationService.decodeHistory(live.history),
+      if ((live.imagePath ?? '').isNotEmpty) live.imagePath!,
+    ];
+    final idx = paths.indexOf(path);
+    if (idx < 0) return;
+    setState(() => _histOffset[illId] = paths.length - 1 - idx);
   }
 
   void _showImageMenu(ImageBlock b) {
@@ -1080,10 +1094,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ];
     final histTotal = paths.length;
     final histOffset = histTotal == 0 ? 0 : (_histOffset[b.illustrationId] ?? 0).clamp(0, histTotal - 1);
+    // 当前正在查看的那张（offset 0 = 最新）；切图/大图/删除都以它为准
+    final shown = paths.isEmpty ? null : paths[paths.length - 1 - histOffset];
     Widget child;
     switch (status) {
       case 'done':
         child = GestureDetector(
+          key: ValueKey('ill-gesture-${b.illustrationId}'),
           behavior: HitTestBehavior.opaque,
           onTapUp: (d) {
             final frac = d.localPosition.dx / fullWidth;
@@ -1094,14 +1111,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
             } else {
               Navigator.push(context, MaterialPageRoute(
                   builder: (_) => ImageViewerScreen(
-                      imagePath: imagePath ?? '', prompt: prompt,
-                      onDelete: (imagePath ?? '').isEmpty
+                      imagePath: shown ?? '', prompt: prompt,
+                      onDelete: (shown ?? '').isEmpty
                           ? null
-                          : () => _deleteCurrentImage(b.illustrationId, imagePath!))));
+                          : () => _deleteCurrentImage(b.illustrationId, shown!))));
             }
           },
           child: Image.file(
-            File(imagePath ?? ''),
+            File(shown ?? ''),
             fit: BoxFit.cover,
             errorBuilder: (_, _, _) => const Center(child: Icon(Icons.broken_image)),
           ),
@@ -1155,7 +1172,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         illustrationId: b.illustrationId,
         status: status,
         aspect: b.aspect,
-        imagePath: imagePath,
+        imagePath: shown,
         error: error,
         prompt: prompt,
         history: paths,
@@ -1417,13 +1434,13 @@ class _ImageManagerSheet extends StatefulWidget {
   const _ImageManagerSheet({
     required this.db,
     required this.bookId,
-    required this.onJump,
+    required this.onOpen,
     required this.onDelete,
   });
 
   final AppDatabase db;
   final int bookId;
-  final void Function(int paragraph) onJump;
+  final void Function(({int illId, int para, String path, bool current})) onOpen;
   final Future<void> Function(Map<int, List<String>> targets) onDelete;
 
   @override
@@ -1544,7 +1561,7 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
                                 sel ? _selected.remove(it.path) : _selected.add(it.path);
                               });
                             } else {
-                              widget.onJump(it.para);
+                              widget.onOpen(it);
                             }
                           },
                           borderRadius: BorderRadius.circular(10),
