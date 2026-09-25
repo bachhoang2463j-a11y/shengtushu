@@ -279,6 +279,18 @@ void main() {
         0,
         reason: '徽标应在 1.5s 后自动消失');
 
+    // 右侧中部 → 切下一张（循环）：最新一张绕回最旧，徽标 1/2
+    await tester.tapAt(bounds.centerRight - Offset(bounds.width * 0.1, 0));
+    await tester.pump();
+    expect((imageOf().image as FileImage).file.path, paths[0],
+        reason: '右侧中部点按应循环切到最旧一张');
+    expect(find.text('1/2'), findsOneWidget);
+
+    // 左侧上半切回最新，恢复初始状态
+    await tester.tapAt(bounds.centerLeft + Offset(bounds.width * 0.1, -bounds.height * 0.25));
+    await tester.pump();
+    expect((imageOf().image as FileImage).file.path, paths[1]);
+
     // 中间点按 → 打开大图查看器
     await tester.tap(find.byKey(const ValueKey('ill-gesture-1')));
     await tester.pumpAndSettle();

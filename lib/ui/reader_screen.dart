@@ -62,6 +62,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   int? _pendingRestoreParagraph;
   bool _generating = false;
   String _selectionText = '';
+  SelectableRegionState? _selRegionState; // 选区菜单构建时保存，点非文本区域时用来清除选区
 
   // 插图历史回看偏移：0 = 最新一张，1 = 上一张（更旧），仅阅读会话内有效
   final Map<int, int> _histOffset = {};
@@ -309,9 +310,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   // ---------- 沉浸式交互（demo：三分区点击 / 呼出栏 / 排版面板） ----------
 
+  /// 点按非文本区域时清除文字选区（SelectionArea 只在点按可选文本时收起，图片/空白处不会）
+  void _dismissSelection() {
+    _selRegionState
+      ?..hideToolbar()
+      ..clearSelection();
+  }
+
   void _handleTapUp(TapUpDetails d) {
-    // 有活动选区时先让 SelectionArea 处理（收起菜单），不翻页
-    if (_selectionText.isNotEmpty) return;
+    // 有活动选区时先清除选区（不翻页），下一次点按再正常生效
+    if (_selectionText.isNotEmpty) {
+      _dismissSelection();
+      return;
+    }
     // 只有左右翻页模式启用三分区；滚动模式点哪都只呼出/收起控制栏（避免误触翻动）
     if (_settings.pageMode == 'page') {
       final frac = d.localPosition.dx / MediaQuery.sizeOf(context).width;
@@ -1096,13 +1107,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  /// 插图历史切换：dir=+1 向更旧（左下），dir=-1 向更新（左上）；
-  /// 已到边界则无反应（重新生成走右侧热区），切换成功后短暂显示计数徽标
-  void _stepImage(int illustrationId, int total, int dir) {
-    final next = (_histOffset[illustrationId] ?? 0) + dir;
-    if (next < 0 || next > total - 1) return;
+  /// 历史切换共用：更新偏移并短暂显示计数徽标
+  void _setHistOffset(int illustrationId, int offset) {
     setState(() {
-      _histOffset[illustrationId] = next;
+      _histOffset[illustrationId] = offset;
       _histBadgeId = illustrationId;
     });
     _histBadgeTimer?.cancel();
@@ -1111,7 +1119,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
     });
   }
 
-  /// 右侧热区快速重生成分流：slot 1 = 第一工作流（右上半），slot 2 = 第二工作流（右下半）
+  /// 左侧竖带历史步进：dir=+1 向更旧（左下），dir=-1 向更新（左上）；到边界无反应
+  void _stepImage(int illustrationId, int total, int dir) {
+    final next = (_histOffset[illustrationId] ?? 0) + dir;
+    if (next < 0 || next > total - 1) return;
+    _setHistOffset(illustrationId, next);
+  }
+
+  /// 右侧中部「切下一张」：向更新方向步进，到最新后绕回最旧循环浏览
+  void _cycleNextImage(int illustrationId, int total) {
+    if (total <= 1) return;
+    _setHistOffset(illustrationId, ((_histOffset[illustrationId] ?? 0) + total - 1) % total);
+  }
+
+  /// 右侧热区快速重生成分流：slot 1 = 第一工作流（右上 1/3），slot 2 = 第二工作流（右下 1/3）
   Future<void> _regenWithSlot(int illustrationId, int slot) async {
     if (slot == 2) {
       final rows =
@@ -1166,14 +1187,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
           key: ValueKey('ill-gesture-${b.illustrationId}'),
           behavior: HitTestBehavior.opaque,
           onTapUp: (d) {
-            final frac = d.localPosition.dx / fullWidth;
-            final topHalf = d.localPosition.dy < h / 2;
+            // 有文字选区时点图片：先清除选区，本次点按不作他用
+            if (_selectionText.isNotEmpty) {
+              _dismissSelection();
+              return;
+            }
+            // 热区按实际渲染宽算：fullWidth 是屏宽，外层 Padding 左右各收窄 _padH
+            final imgW = fullWidth - 2 * _padH;
+            final frac = d.localPosition.dx / imgW;
+            final dy = d.localPosition.dy;
             if (frac < 0.2) {
               // 左侧竖带：上半切到更新一版，下半切到更旧一版
-              _stepImage(b.illustrationId, histTotal, topHalf ? -1 : 1);
+              _stepImage(b.illustrationId, histTotal, dy < h / 2 ? -1 : 1);
             } else if (frac >= 0.8) {
-              // 右侧竖带：上半用第一工作流重生，下半用第二工作流重生
-              _regenWithSlot(b.illustrationId, topHalf ? 1 : 2);
+              // 右侧竖带三段：上 1/3 第一工作流重生，中 1/3 切下一张，下 1/3 第二工作流重生
+              if (dy < h / 3) {
+                _regenWithSlot(b.illustrationId, 1);
+              } else if (dy >= h * 2 / 3) {
+                _regenWithSlot(b.illustrationId, 2);
+              } else {
+                _cycleNextImage(b.illustrationId, histTotal);
+              }
             } else {
               Navigator.push(context, MaterialPageRoute(
                   builder: (_) => ImageViewerScreen(
@@ -1303,6 +1337,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   /// 选中文字后的浮动菜单：生图 / 朗读 / 编辑 / 复制 / 全选（demo 胶囊样式，AdaptiveTextSelectionToolbar 负责锚定）
   Widget _selectionMenu(BuildContext context, SelectableRegionState selectableRegionState) {
+    _selRegionState = selectableRegionState;
     final endpoints = selectableRegionState.selectionEndpoints;
     return AdaptiveTextSelectionToolbar(
       anchors: TextSelectionToolbarAnchors(
