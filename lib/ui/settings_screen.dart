@@ -9,10 +9,44 @@ import '../data/database.dart';
 import '../services/comfyui_client.dart';
 import '../services/default_workflow.dart';
 import '../services/settings_service.dart';
+import '../services/tts_service.dart';
 import 'widgets.dart';
 import 'workflow_map_screen.dart';
 
 Widget buildSettingsScreen(AppDatabase db) => SettingsScreen(db: db);
+
+/// MiMo 预置音色（voice 字段直接透传接口），移植自 Conversation_avatar
+const List<(String, String)> kMimoTtsVoices = [
+  ('mimo_default', 'MiMo · 默认'),
+  ('冰糖', '冰糖（中文女）'),
+  ('茉莉', '茉莉（中文女）'),
+  ('苏打', '苏打（中文男）'),
+  ('白桦', '白桦（中文男）'),
+  ('Mia', 'Mia（英文女）'),
+  ('Chloe', 'Chloe（英文女）'),
+  ('Milo', 'Milo（英文男）'),
+  ('Dean', 'Dean（英文男）'),
+];
+
+/// 豆包官方音色（speaker 字段直接透传接口），移植自 Conversation_avatar
+const List<(String, String)> kDoubaoTtsVoices = [
+  ('zh_male_dayi_saturn_bigtts', '大壹（浑厚男声）'),
+  ('zh_male_ruyayichen_saturn_bigtts', '儒雅逸辰（儒雅男声）'),
+  ('saturn_zh_male_shuanglangshaonian_tob', '爽朗少年（阳光少年）'),
+  ('saturn_zh_male_tiancaitongzhuo_tob', '天才同桌（学霸感）'),
+  ('zh_male_m191_uranus_bigtts', '云舟（稳重男声）'),
+  ('zh_male_taocheng_uranus_bigtts', '小天（阳光少年）'),
+  ('zh_female_vv_uranus_bigtts', 'vivi（温柔女声）'),
+  ('saturn_zh_female_cancan_tob', '知性灿灿（知性优雅）'),
+  ('zh_female_meilinvyou_saturn_bigtts', '魅力女友（亲密对话）'),
+  ('saturn_zh_female_keainvsheng_tob', '可爱女生（可爱活泼）'),
+  ('saturn_zh_female_tiaopigongzhu_tob', '调皮公主（公主风）'),
+  ('zh_female_jitangnv_saturn_bigtts', '鸡汤女（情感治愈）'),
+  ('zh_female_santongyongns_saturn_bigtts', '流畅女声（通用）'),
+  ('zh_female_xiaohe_uranus_bigtts', '小何（亲切女声）'),
+  ('zh_female_xueayi_saturn_bigtts', '儿童绘本（绘本朗读）'),
+  ('zh_female_mizai_saturn_bigtts', '黑猫侦探社咪仔（悬疑）'),
+];
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.db});
@@ -121,6 +155,98 @@ class _SettingsScreenState extends State<SettingsScreen> {
             },
           ),
 
+          const SectionHeader(title: '朗读音色（TTS）'),
+          SettingRow(
+            title: '语音引擎',
+            trailing: SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'mimo', label: Text('MiMo')),
+                ButtonSegment(value: 'doubao', label: Text('豆包')),
+              ],
+              selected: {_s.tts.engine},
+              onSelectionChanged: (v) async {
+                final c = _s.tts..engine = v.first;
+                await _s.setTts(c);
+              },
+            ),
+          ),
+          if (_s.tts.engine == 'mimo') ...[
+            SettingRow(
+              title: 'MiMo API Key',
+              subtitle: _s.tts.mimo.apiKey.isEmpty ? '未设置' : '••••••••',
+              onTap: () async {
+                final v = await textInputDialog(context, title: 'MiMo API Key', initial: _s.tts.mimo.apiKey, obscure: true);
+                if (v != null) await _s.setTts(_s.tts..mimo.apiKey = v.trim());
+              },
+            ),
+            SettingRow(
+              title: 'MiMo 接口地址',
+              subtitle: _s.tts.mimo.baseUrl,
+              onTap: () async {
+                final v = await textInputDialog(context, title: 'MiMo 接口地址', initial: _s.tts.mimo.baseUrl, hint: 'https://api.xiaomimimo.com/v1');
+                if (v != null && v.trim().isNotEmpty) await _s.setTts(_s.tts..mimo.baseUrl = v.trim());
+              },
+            ),
+            SettingRow(
+              title: 'MiMo 模型',
+              subtitle: _s.tts.mimo.model,
+              onTap: () async {
+                final v = await textInputDialog(context, title: 'MiMo 模型', initial: _s.tts.mimo.model, hint: 'mimo-v2.5-tts');
+                if (v != null && v.trim().isNotEmpty) await _s.setTts(_s.tts..mimo.model = v.trim());
+              },
+            ),
+            SettingRow(
+              title: 'MiMo 音频格式',
+              trailing: SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'wav', label: Text('WAV')),
+                  ButtonSegment(value: 'mp3', label: Text('MP3')),
+                ],
+                selected: {_s.tts.mimo.format},
+                onSelectionChanged: (v) async {
+                  final c = _s.tts..mimo.format = v.first;
+                  await _s.setTts(c);
+                },
+              ),
+            ),
+          ] else ...[
+            SettingRow(
+              title: '豆包 App ID',
+              subtitle: _s.tts.doubao.appId.isEmpty ? '未设置' : _s.tts.doubao.appId,
+              onTap: () async {
+                final v = await textInputDialog(context, title: '豆包 App ID', initial: _s.tts.doubao.appId);
+                if (v != null) await _s.setTts(_s.tts..doubao.appId = v.trim());
+              },
+            ),
+            SettingRow(
+              title: '豆包 Access Key',
+              subtitle: _s.tts.doubao.accessKey.isEmpty ? '未设置' : '••••••••',
+              onTap: () async {
+                final v = await textInputDialog(context, title: '豆包 Access Key', initial: _s.tts.doubao.accessKey, obscure: true);
+                if (v != null) await _s.setTts(_s.tts..doubao.accessKey = v.trim());
+              },
+            ),
+            SettingRow(
+              title: '豆包 Resource ID',
+              subtitle: _s.tts.doubao.resourceId,
+              onTap: () async {
+                final v = await textInputDialog(context, title: '豆包 Resource ID', initial: _s.tts.doubao.resourceId, hint: 'seed-tts-2.0');
+                if (v != null && v.trim().isNotEmpty) await _s.setTts(_s.tts..doubao.resourceId = v.trim());
+              },
+            ),
+          ],
+          SettingRow(
+            title: '音色',
+            subtitle: _ttsVoiceLabel(),
+            onTap: _pickTtsVoice,
+          ),
+          SettingRow(
+            title: '试听',
+            subtitle: _ttsTestResult ?? '用当前引擎与音色合成一句示例',
+            trailing: const Icon(Icons.volume_up),
+            onTap: _previewTts,
+          ),
+
           const SectionHeader(title: 'ComfyUI'),
           SettingRow(
             title: '服务器地址',
@@ -207,6 +333,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  // ---------- 朗读音色 ----------
+
+  String? _ttsTestResult;
+  bool _ttsTesting = false;
+
+  String _ttsVoiceLabel() {
+    final cfg = _s.tts;
+    final presets = cfg.engine == 'mimo' ? kMimoTtsVoices : kDoubaoTtsVoices;
+    final voice = cfg.engine == 'mimo' ? cfg.mimo.voice : cfg.doubao.voice;
+    if (voice.isEmpty) return '未选择';
+    for (final (id, name) in presets) {
+      if (id == voice) return '$name（$id）';
+    }
+    return voice;
+  }
+
+  Future<void> _pickTtsVoice() async {
+    final cfg = _s.tts;
+    final isMimo = cfg.engine == 'mimo';
+    final presets = isMimo ? kMimoTtsVoices : kDoubaoTtsVoices;
+    final picked = await showDialog<String>(
+      context: context,
+      builder: (c) => SimpleDialog(
+        title: Text(isMimo ? 'MiMo 音色' : '豆包音色'),
+        children: [
+          for (final (id, name) in presets)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(c, id),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(name),
+                Text(id, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              ]),
+            ),
+          const Divider(),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(c, ''),
+            child: const Text('✎ 自定义音色 ID'),
+          ),
+        ],
+      ),
+    );
+    if (picked == null) return;
+    var voice = picked;
+    if (voice.isEmpty) {
+      if (!mounted) return;
+      final custom = await textInputDialog(
+          context, title: '自定义音色 ID', initial: isMimo ? cfg.mimo.voice : cfg.doubao.voice);
+      if (custom == null) return;
+      voice = custom.trim();
+      if (voice.isEmpty) return;
+    }
+    if (isMimo) {
+      await _s.setTts(_s.tts..mimo.voice = voice);
+    } else {
+      await _s.setTts(_s.tts..doubao.voice = voice);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _previewTts() async {
+    if (_ttsTesting) return;
+    setState(() {
+      _ttsTesting = true;
+      _ttsTestResult = '合成中…';
+    });
+    try {
+      await TtsService.instance.speak('你好，这是生图书的朗读音色试听。');
+      if (mounted) setState(() => _ttsTestResult = '✅ 播放完成');
+    } catch (e) {
+      if (mounted) setState(() => _ttsTestResult = '❌ $e');
+    } finally {
+      if (mounted) setState(() => _ttsTesting = false);
+    }
   }
 
   Future<void> _editResolution() async {
@@ -497,11 +698,22 @@ class _WorkflowManagerScreenState extends State<WorkflowManagerScreen> {
               return Card(
                 child: ListTile(
                   leading: Icon(
-                    wf.isActive ? Icons.check_circle : Icons.radio_button_unchecked,
-                    color: wf.isActive ? Colors.green : Colors.grey,
+                    wf.isActive
+                        ? Icons.check_circle
+                        : wf.isSecond
+                            ? Icons.star
+                            : Icons.radio_button_unchecked,
+                    color: wf.isActive
+                        ? Colors.green
+                        : wf.isSecond
+                            ? Colors.blue
+                            : Colors.grey,
                   ),
                   title: Text(wf.name),
-                  subtitle: Text(wf.isActive ? '已启用' : '未启用', style: const TextStyle(fontSize: 12)),
+                  subtitle: Text(
+                    wf.isActive ? '第一工作流' : wf.isSecond ? '第二工作流（↻2 重生成用）' : '未启用',
+                    style: const TextStyle(fontSize: 12),
+                  ),
                   onTap: () => Navigator.push(context, MaterialPageRoute(
                       builder: (_) => WorkflowMapScreen(db: widget.db, workflow: wf))),
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -510,6 +722,13 @@ class _WorkflowManagerScreenState extends State<WorkflowManagerScreen> {
                         onPressed: () => _activate(wf),
                         child: const Text('启用'),
                       ),
+                    TextButton(
+                      onPressed: () => _toggleSecond(wf),
+                      style: TextButton.styleFrom(
+                        foregroundColor: wf.isSecond ? Colors.blue : null,
+                      ),
+                      child: Text(wf.isSecond ? '第二 ✓' : '第二'),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.delete_outline),
                       onPressed: () async {
@@ -531,6 +750,18 @@ class _WorkflowManagerScreenState extends State<WorkflowManagerScreen> {
       await widget.db.update(widget.db.workflows).write(const WorkflowsCompanion(isActive: Value(false)));
       await (widget.db.update(widget.db.workflows)..where((t) => t.id.equals(wf.id)))
           .write(const WorkflowsCompanion(isActive: Value(true)));
+    });
+  }
+
+  /// 设为/取消第二工作流；设为时清空其他行的第二标记（同一时刻只有一个）
+  Future<void> _toggleSecond(Workflow wf) async {
+    final next = !wf.isSecond;
+    await widget.db.transaction(() async {
+      if (next) {
+        await widget.db.update(widget.db.workflows).write(const WorkflowsCompanion(isSecond: Value(false)));
+      }
+      await (widget.db.update(widget.db.workflows)..where((t) => t.id.equals(wf.id)))
+          .write(WorkflowsCompanion(isSecond: Value(next)));
     });
   }
 

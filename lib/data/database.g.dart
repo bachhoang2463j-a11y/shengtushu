@@ -1733,8 +1733,30 @@ class $WorkflowsTable extends Workflows
     ),
     defaultValue: const Constant(false),
   );
+  static const VerificationMeta _isSecondMeta = const VerificationMeta(
+    'isSecond',
+  );
   @override
-  List<GeneratedColumn> get $columns => [id, name, apiJson, mapping, isActive];
+  late final GeneratedColumn<bool> isSecond = GeneratedColumn<bool>(
+    'is_second',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("is_second" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    name,
+    apiJson,
+    mapping,
+    isActive,
+    isSecond,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -1778,6 +1800,12 @@ class $WorkflowsTable extends Workflows
         isActive.isAcceptableOrUnknown(data['is_active']!, _isActiveMeta),
       );
     }
+    if (data.containsKey('is_second')) {
+      context.handle(
+        _isSecondMeta,
+        isSecond.isAcceptableOrUnknown(data['is_second']!, _isSecondMeta),
+      );
+    }
     return context;
   }
 
@@ -1807,6 +1835,10 @@ class $WorkflowsTable extends Workflows
         DriftSqlType.bool,
         data['${effectivePrefix}is_active'],
       )!,
+      isSecond: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}is_second'],
+      )!,
     );
   }
 
@@ -1822,12 +1854,14 @@ class Workflow extends DataClass implements Insertable<Workflow> {
   final String apiJson;
   final String mapping;
   final bool isActive;
+  final bool isSecond;
   const Workflow({
     required this.id,
     required this.name,
     required this.apiJson,
     required this.mapping,
     required this.isActive,
+    required this.isSecond,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1837,6 +1871,7 @@ class Workflow extends DataClass implements Insertable<Workflow> {
     map['api_json'] = Variable<String>(apiJson);
     map['mapping'] = Variable<String>(mapping);
     map['is_active'] = Variable<bool>(isActive);
+    map['is_second'] = Variable<bool>(isSecond);
     return map;
   }
 
@@ -1847,6 +1882,7 @@ class Workflow extends DataClass implements Insertable<Workflow> {
       apiJson: Value(apiJson),
       mapping: Value(mapping),
       isActive: Value(isActive),
+      isSecond: Value(isSecond),
     );
   }
 
@@ -1861,6 +1897,7 @@ class Workflow extends DataClass implements Insertable<Workflow> {
       apiJson: serializer.fromJson<String>(json['apiJson']),
       mapping: serializer.fromJson<String>(json['mapping']),
       isActive: serializer.fromJson<bool>(json['isActive']),
+      isSecond: serializer.fromJson<bool>(json['isSecond']),
     );
   }
   @override
@@ -1872,6 +1909,7 @@ class Workflow extends DataClass implements Insertable<Workflow> {
       'apiJson': serializer.toJson<String>(apiJson),
       'mapping': serializer.toJson<String>(mapping),
       'isActive': serializer.toJson<bool>(isActive),
+      'isSecond': serializer.toJson<bool>(isSecond),
     };
   }
 
@@ -1881,12 +1919,14 @@ class Workflow extends DataClass implements Insertable<Workflow> {
     String? apiJson,
     String? mapping,
     bool? isActive,
+    bool? isSecond,
   }) => Workflow(
     id: id ?? this.id,
     name: name ?? this.name,
     apiJson: apiJson ?? this.apiJson,
     mapping: mapping ?? this.mapping,
     isActive: isActive ?? this.isActive,
+    isSecond: isSecond ?? this.isSecond,
   );
   Workflow copyWithCompanion(WorkflowsCompanion data) {
     return Workflow(
@@ -1895,6 +1935,7 @@ class Workflow extends DataClass implements Insertable<Workflow> {
       apiJson: data.apiJson.present ? data.apiJson.value : this.apiJson,
       mapping: data.mapping.present ? data.mapping.value : this.mapping,
       isActive: data.isActive.present ? data.isActive.value : this.isActive,
+      isSecond: data.isSecond.present ? data.isSecond.value : this.isSecond,
     );
   }
 
@@ -1905,13 +1946,15 @@ class Workflow extends DataClass implements Insertable<Workflow> {
           ..write('name: $name, ')
           ..write('apiJson: $apiJson, ')
           ..write('mapping: $mapping, ')
-          ..write('isActive: $isActive')
+          ..write('isActive: $isActive, ')
+          ..write('isSecond: $isSecond')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, name, apiJson, mapping, isActive);
+  int get hashCode =>
+      Object.hash(id, name, apiJson, mapping, isActive, isSecond);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1920,7 +1963,8 @@ class Workflow extends DataClass implements Insertable<Workflow> {
           other.name == this.name &&
           other.apiJson == this.apiJson &&
           other.mapping == this.mapping &&
-          other.isActive == this.isActive);
+          other.isActive == this.isActive &&
+          other.isSecond == this.isSecond);
 }
 
 class WorkflowsCompanion extends UpdateCompanion<Workflow> {
@@ -1929,12 +1973,14 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
   final Value<String> apiJson;
   final Value<String> mapping;
   final Value<bool> isActive;
+  final Value<bool> isSecond;
   const WorkflowsCompanion({
     this.id = const Value.absent(),
     this.name = const Value.absent(),
     this.apiJson = const Value.absent(),
     this.mapping = const Value.absent(),
     this.isActive = const Value.absent(),
+    this.isSecond = const Value.absent(),
   });
   WorkflowsCompanion.insert({
     this.id = const Value.absent(),
@@ -1942,6 +1988,7 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
     required String apiJson,
     this.mapping = const Value.absent(),
     this.isActive = const Value.absent(),
+    this.isSecond = const Value.absent(),
   }) : name = Value(name),
        apiJson = Value(apiJson);
   static Insertable<Workflow> custom({
@@ -1950,6 +1997,7 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
     Expression<String>? apiJson,
     Expression<String>? mapping,
     Expression<bool>? isActive,
+    Expression<bool>? isSecond,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -1957,6 +2005,7 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
       if (apiJson != null) 'api_json': apiJson,
       if (mapping != null) 'mapping': mapping,
       if (isActive != null) 'is_active': isActive,
+      if (isSecond != null) 'is_second': isSecond,
     });
   }
 
@@ -1966,6 +2015,7 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
     Value<String>? apiJson,
     Value<String>? mapping,
     Value<bool>? isActive,
+    Value<bool>? isSecond,
   }) {
     return WorkflowsCompanion(
       id: id ?? this.id,
@@ -1973,6 +2023,7 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
       apiJson: apiJson ?? this.apiJson,
       mapping: mapping ?? this.mapping,
       isActive: isActive ?? this.isActive,
+      isSecond: isSecond ?? this.isSecond,
     );
   }
 
@@ -1994,6 +2045,9 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
     if (isActive.present) {
       map['is_active'] = Variable<bool>(isActive.value);
     }
+    if (isSecond.present) {
+      map['is_second'] = Variable<bool>(isSecond.value);
+    }
     return map;
   }
 
@@ -2004,7 +2058,8 @@ class WorkflowsCompanion extends UpdateCompanion<Workflow> {
           ..write('name: $name, ')
           ..write('apiJson: $apiJson, ')
           ..write('mapping: $mapping, ')
-          ..write('isActive: $isActive')
+          ..write('isActive: $isActive, ')
+          ..write('isSecond: $isSecond')
           ..write(')'))
         .toString();
   }
@@ -3096,6 +3151,7 @@ typedef $$WorkflowsTableCreateCompanionBuilder =
       required String apiJson,
       Value<String> mapping,
       Value<bool> isActive,
+      Value<bool> isSecond,
     });
 typedef $$WorkflowsTableUpdateCompanionBuilder =
     WorkflowsCompanion Function({
@@ -3104,6 +3160,7 @@ typedef $$WorkflowsTableUpdateCompanionBuilder =
       Value<String> apiJson,
       Value<String> mapping,
       Value<bool> isActive,
+      Value<bool> isSecond,
     });
 
 class $$WorkflowsTableFilterComposer
@@ -3137,6 +3194,11 @@ class $$WorkflowsTableFilterComposer
 
   ColumnFilters<bool> get isActive => $composableBuilder(
     column: $table.isActive,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get isSecond => $composableBuilder(
+    column: $table.isSecond,
     builder: (column) => ColumnFilters(column),
   );
 }
@@ -3174,6 +3236,11 @@ class $$WorkflowsTableOrderingComposer
     column: $table.isActive,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<bool> get isSecond => $composableBuilder(
+    column: $table.isSecond,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$WorkflowsTableAnnotationComposer
@@ -3199,6 +3266,9 @@ class $$WorkflowsTableAnnotationComposer
 
   GeneratedColumn<bool> get isActive =>
       $composableBuilder(column: $table.isActive, builder: (column) => column);
+
+  GeneratedColumn<bool> get isSecond =>
+      $composableBuilder(column: $table.isSecond, builder: (column) => column);
 }
 
 class $$WorkflowsTableTableManager
@@ -3234,12 +3304,14 @@ class $$WorkflowsTableTableManager
                 Value<String> apiJson = const Value.absent(),
                 Value<String> mapping = const Value.absent(),
                 Value<bool> isActive = const Value.absent(),
+                Value<bool> isSecond = const Value.absent(),
               }) => WorkflowsCompanion(
                 id: id,
                 name: name,
                 apiJson: apiJson,
                 mapping: mapping,
                 isActive: isActive,
+                isSecond: isSecond,
               ),
           createCompanionCallback:
               ({
@@ -3248,12 +3320,14 @@ class $$WorkflowsTableTableManager
                 required String apiJson,
                 Value<String> mapping = const Value.absent(),
                 Value<bool> isActive = const Value.absent(),
+                Value<bool> isSecond = const Value.absent(),
               }) => WorkflowsCompanion.insert(
                 id: id,
                 name: name,
                 apiJson: apiJson,
                 mapping: mapping,
                 isActive: isActive,
+                isSecond: isSecond,
               ),
           withReferenceMapper: (p0) => p0
               .map(

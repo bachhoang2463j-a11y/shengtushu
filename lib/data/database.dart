@@ -58,6 +58,8 @@ class Workflows extends Table {
   //        "width":{...},"height":{...},"seed":{...},"batch":{...}}（除 positive 外均可缺省）
   TextColumn get mapping => text().withDefault(const Constant('{}'))();
   BoolColumn get isActive => boolean().withDefault(const Constant(false))();
+  // 第二工作流：仅用于图片上的 ↻2 重生成分流；isActive 即第一工作流（生成默认）
+  BoolColumn get isSecond => boolean().withDefault(const Constant(false))();
 }
 
 @DriftDatabase(tables: [Books, Chapters, Illustrations, Workflows])
@@ -68,7 +70,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTest(super.executor);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -79,6 +81,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 3) {
         await m.addColumn(illustrations, illustrations.history);
+      }
+      if (from < 4) {
+        await m.addColumn(workflows, workflows.isSecond);
       }
     },
   );

@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,6 +21,7 @@ class MiniMock {
   HttpServer? _server;
   final List<int> seeds = [];
   final List<String> prompts = [];
+  final List<String> rawPromptBodies = []; // 提交的 /prompt 原始 body（工作流分流断言用）
   int _pid = 0;
 
   String get base => 'http://127.0.0.1:${_server!.port}';
@@ -57,7 +59,9 @@ class MiniMock {
         return;
       }
       if (req.method == 'POST' && path == '/prompt') {
-        final body = jsonDecode(await utf8.decodeStream(req)) as Map<String, dynamic>;
+        final raw = await utf8.decodeStream(req);
+        rawPromptBodies.add(raw);
+        final body = jsonDecode(raw) as Map<String, dynamic>;
         final wf = (body['prompt'] ?? body) as Map<String, dynamic>;
         // 抓取 KSampler 种子，供断言「每次随机」
         outer:
@@ -269,8 +273,70 @@ void main() {
     expect(find.text('插图'), findsOneWidget);
   });
 
-  test('多选删除：删历史图与当前图，当前图被删时提升最近历史', () async {
+  testWidgets('重生成分流：↻2 未设置时提示，设置后用第二工作流；↻1 仍用第一', (tester) async {
     final gen = GenerationService.instance;
+    await gen.generateSelection(
+      book: book,
+      chapter: chapter,
+      selectionText: '　　第 1 段测试正文。',
+      endParagraphIndex: 1,
+      endCharOffset: -1,
+      history: const [],
+    );
+    await waitUntilIdle();
+    await SettingsService.instance.setPageMode('scroll');
+    await tester.pumpWidget(MaterialApp(home: ReaderScreen(db: db, bookId: book.id)));
+    for (var i = 0; i < 30; i++) {
+      await binding.runAsync(() async => Future<void>.delayed(const Duration(milliseconds: 100)));
+      await tester.pump();
+      if (find.byType(Image).evaluate().isNotEmpty) break;
+    }
+    final regen1 = find.byKey(const ValueKey('ill-regen1-1'));
+    final regen2 = find.byKey(const ValueKey('ill-regen2-1'));
+    expect(regen1, findsOneWidget, reason: '右上角应有 ↻1 按钮');
+    expect(regen2, findsOneWidget, reason: '右下角应有 ↻2 按钮');
+    var bodiesBefore = mock.rawPromptBodies.length;
+
+    // 未设置第二工作流：点 ↻2 → 只弹提示，不产生生成请求（短测试屏里先滚到按钮可见）
+    await tester.ensureVisible(regen2);
+    await tester.pump();
+    await tester.tap(regen2);
+    await binding.runAsync(() async => Future<void>.delayed(const Duration(milliseconds: 300)));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('未设置第二工作流'), findsOneWidget);
+    expect(mock.rawPromptBodies.length, bodiesBefore, reason: '未设置第二工作流时不应提交生成');
+
+    // 设置第二工作流（apiJson 注入 marker），点 ↻2 → 用第二工作流生成
+    final defWf = await (db.select(db.workflows)..where((t) => t.isActive.equals(true))).getSingle();
+    await db.into(db.workflows).insert(WorkflowsCompanion.insert(
+      name: 'second-wf',
+      apiJson: defWf.apiJson.replaceFirst('{', '{"_e2e_marker":"second",', 1),
+      mapping: Value(defWf.mapping),
+      isActive: const Value(false),
+      isSecond: const Value(true),
+    ));
+    await tester.ensureVisible(regen2);
+    await tester.pump();
+    await tester.tap(regen2);
+    await waitUntilIdle();
+    await tester.pump();
+    expect(mock.rawPromptBodies.length, bodiesBefore + 1, reason: '↻2 应提交一次生成');
+    expect(mock.rawPromptBodies.last, contains('_e2e_marker'), reason: '↻2 必须用第二工作流提交');
+    final ill = await (db.select(db.illustrations)..where((t) => t.id.equals(1))).getSingle();
+    expect(GenerationService.decodeHistory(ill.history), hasLength(1), reason: '↻2 生成后旧图进历史');
+
+    // 点 ↻1 → 仍用第一工作流（无 marker）
+    bodiesBefore = mock.rawPromptBodies.length;
+    await tester.ensureVisible(regen1);
+    await tester.pump();
+    await tester.tap(regen1);
+    await waitUntilIdle();
+    await tester.pump();
+    expect(mock.rawPromptBodies.length, bodiesBefore + 1);
+    expect(mock.rawPromptBodies.last, isNot(contains('_e2e_marker')), reason: '↻1 必须用第一工作流提交');
+  });
+
+  test('多选删除：删历史图与当前图，当前图被删时提升最近历史', () async {    final gen = GenerationService.instance;
     await gen.generateSelection(
       book: book,
       chapter: chapter,

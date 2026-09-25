@@ -10,7 +10,9 @@ import '../data/database.dart';
 import '../reader/paginator.dart';
 import '../services/chapter_editor.dart';
 import '../services/generation_service.dart';
+import '../services/quote_expander.dart';
 import '../services/settings_service.dart';
+import '../services/tts_service.dart';
 import 'image_viewer_screen.dart';
 import 'settings_screen.dart';
 import 'theme_ext.dart';
@@ -709,6 +711,36 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  /// 朗读选中文本：选区两侧/自身有 "…" 时自动扩展/剥离为引号内文本（QuoteExpander）。
+  /// 说明：SDK 无编程式选区 API，视觉选区无法自动扩到引号内；
+  /// 扩展在点击朗读时完成，「朗读中」提示条会显示将要朗读的完整文本。
+  Future<void> _speakSelection(String sel) async {
+    final ch = _chapter;
+    var text = sel.trim();
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先长按滑动选中一段文字')));
+      return;
+    }
+    if (ch != null) {
+      text = QuoteExpander.expand(ch.content.split('\n'), text,
+          hintParagraph: _currentAnchorParagraph());
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      duration: const Duration(minutes: 10),
+      content: Text('朗读中：${text.length > 24 ? '${text.substring(0, 24)}…' : text}'),
+      action: SnackBarAction(label: '停止', onPressed: () => TtsService.instance.stop()),
+    ));
+    try {
+      await TtsService.instance.speak(text);
+      messenger.hideCurrentSnackBar(); // 播完自动收起
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text('朗读失败：${_friendlyError(e)}')));
+    }
+  }
+
   /// 把底层网络异常翻译成可操作的提示（如 HandshakeException 多为代理/系统时间问题）
   String _friendlyError(Object e) {
     final s = e.toString();
@@ -1072,6 +1104,42 @@ class _ReaderScreenState extends State<ReaderScreen> {
     setState(() => _histOffset[illustrationId] = next);
   }
 
+  /// 图片右上/右下角的快速重生成分流按钮：↻1 = 第一工作流，↻2 = 第二工作流
+  Widget _regenButton(int illustrationId, int slot) {
+    return GestureDetector(
+      key: ValueKey('ill-regen$slot-$illustrationId'),
+      onTap: () => _regenWithSlot(illustrationId, slot),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.refresh, size: 12, color: Colors.white),
+          const SizedBox(width: 2),
+          Text('$slot',
+              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _regenWithSlot(int illustrationId, int slot) async {
+    if (slot == 2) {
+      final rows =
+          await (widget.db.select(widget.db.workflows)..where((t) => t.isSecond.equals(true))).get();
+      if (rows.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('未设置第二工作流：到 设置 → 工作流管理，点某个工作流的「第二」按钮')));
+        }
+        return;
+      }
+    }
+    await _gen.regenerate(illustrationId, useSecond: slot == 2);
+  }
+
   Widget _renderImage(ImageBlock b, double fullWidth) {
     // 实时状态：排版缓存里只有布局信息，状态/路径以数据库最新值为准（进度变化不触发重排版）
     final live = _illsById[b.illustrationId];
@@ -1197,7 +1265,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           child: child,
         ),
         Positioned(
-          right: 14, bottom: 14,
+          left: 14, bottom: 14,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             decoration: BoxDecoration(
@@ -1214,6 +1282,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
             ]),
           ),
         ),
+        // 快速重生成分流：↻1 = 第一工作流（默认），↻2 = 第二工作流（模型对比）
+        if (status == 'done' && (shown ?? '').isNotEmpty) ...[
+          Positioned(top: 10, right: 10, child: _regenButton(b.illustrationId, 1)),
+          Positioned(bottom: 10, right: 10, child: _regenButton(b.illustrationId, 2)),
+        ],
       ]),
     );
   }
@@ -1233,7 +1306,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  /// 选中文字后的浮动菜单：生图 / 编辑 / 复制 / 全选（demo 胶囊样式，AdaptiveTextSelectionToolbar 负责锚定）
+  /// 选中文字后的浮动菜单：生图 / 朗读 / 编辑 / 复制 / 全选（demo 胶囊样式，AdaptiveTextSelectionToolbar 负责锚定）
   Widget _selectionMenu(BuildContext context, SelectableRegionState selectableRegionState) {
     final endpoints = selectableRegionState.selectionEndpoints;
     return AdaptiveTextSelectionToolbar(
@@ -1258,6 +1331,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   selectableRegionState.hideToolbar();
                   selectableRegionState.clearSelection();
                   _generateFromSelection(sel);
+                },
+              ),
+              _pillButton(
+                '朗读', Icons.volume_up_outlined,
+                onTap: () {
+                  // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
+                  final sel = _selectionText;
+                  selectableRegionState.hideToolbar();
+                  selectableRegionState.clearSelection();
+                  _speakSelection(sel);
                 },
               ),
               _pillButton('编辑', Icons.edit_outlined,

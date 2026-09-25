@@ -54,6 +54,74 @@ class TplMessage {
       TplMessage(role: j['role'] ?? 'system', content: j['content'] ?? '');
 }
 
+/// 朗读（TTS）配置：引擎 + 各家凭证/音色（请求格式移植自 Conversation_avatar 项目）
+class TtsMimoConfig {
+  String apiKey;
+  String baseUrl;
+  String model;
+  String format; // wav | mp3
+  String voice;
+  TtsMimoConfig({
+    this.apiKey = '',
+    this.baseUrl = 'https://api.xiaomimimo.com/v1',
+    this.model = 'mimo-v2.5-tts',
+    this.format = 'wav',
+    this.voice = 'mimo_default',
+  });
+
+  Map<String, dynamic> toJson() =>
+      {'apiKey': apiKey, 'baseUrl': baseUrl, 'model': model, 'format': format, 'voice': voice};
+  factory TtsMimoConfig.fromJson(Map<String, dynamic> j) => TtsMimoConfig(
+    apiKey: j['apiKey'] ?? '',
+    baseUrl: j['baseUrl'] ?? 'https://api.xiaomimimo.com/v1',
+    model: j['model'] ?? 'mimo-v2.5-tts',
+    format: j['format'] ?? 'wav',
+    voice: j['voice'] ?? 'mimo_default',
+  );
+}
+
+class TtsDoubaoConfig {
+  String appId;
+  String accessKey;
+  String resourceId;
+  String uid;
+  String voice;
+  TtsDoubaoConfig({
+    this.appId = '',
+    this.accessKey = '',
+    this.resourceId = 'seed-tts-2.0',
+    this.uid = '1222356',
+    this.voice = '',
+  });
+
+  Map<String, dynamic> toJson() =>
+      {'appId': appId, 'accessKey': accessKey, 'resourceId': resourceId, 'uid': uid, 'voice': voice};
+  factory TtsDoubaoConfig.fromJson(Map<String, dynamic> j) => TtsDoubaoConfig(
+    appId: j['appId'] ?? '',
+    accessKey: j['accessKey'] ?? '',
+    resourceId: j['resourceId'] ?? 'seed-tts-2.0',
+    uid: j['uid'] ?? '1222356',
+    voice: j['voice'] ?? '',
+  );
+}
+
+class TtsConfig {
+  String engine; // mimo | doubao
+  TtsMimoConfig mimo;
+  TtsDoubaoConfig doubao;
+  TtsConfig({this.engine = 'mimo', TtsMimoConfig? mimo, TtsDoubaoConfig? doubao})
+      : mimo = mimo ?? TtsMimoConfig(),
+        doubao = doubao ?? TtsDoubaoConfig();
+
+  Map<String, dynamic> toJson() =>
+      {'engine': engine, 'mimo': mimo.toJson(), 'doubao': doubao.toJson()};
+  factory TtsConfig.fromJson(Map<String, dynamic> j) => TtsConfig(
+    engine: j['engine'] ?? 'mimo',
+    mimo: TtsMimoConfig.fromJson((j['mimo'] as Map<String, dynamic>?) ?? const {}),
+    doubao: TtsDoubaoConfig.fromJson((j['doubao'] as Map<String, dynamic>?) ?? const {}),
+  );
+}
+
 class SettingsService extends ChangeNotifier {
   SettingsService._();
   static final SettingsService instance = SettingsService._();
@@ -136,6 +204,16 @@ class SettingsService extends ChangeNotifier {
   }
   Future<void> setPersonas(List<PersonaPreset> list) =>
       _set('personas', jsonEncode(list.map((p) => p.toJson()).toList()));
+
+  // ---------- 朗读（TTS） ----------
+  TtsConfig get tts {
+    try {
+      return TtsConfig.fromJson(jsonDecode(_get('tts', '{}')) as Map<String, dynamic>);
+    } catch (_) {
+      return TtsConfig();
+    }
+  }
+  Future<void> setTts(TtsConfig c) => _set('tts', jsonEncode(c.toJson()));
 
   // ---------- 阅读偏好 ----------
   double get fontSize => _sp.getDouble('fontSize') ?? 17.0;

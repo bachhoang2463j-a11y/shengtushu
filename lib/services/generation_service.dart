@@ -23,12 +23,14 @@ class GenTaskView {
   String status; // queued | running | done | failed
   double progress; // 0..1
   String error;
+  bool useSecond; // 该任务用第二工作流生成（图片 ↻2 重生成分流）
   GenTaskView({
     required this.illustrationId,
     required this.promptPreview,
     this.status = 'queued',
     this.progress = 0,
     this.error = '',
+    this.useSecond = false,
   });
 }
 
@@ -287,14 +289,36 @@ class GenerationService extends ChangeNotifier {
     final db = _requireDb();
     final settings = _settings;
 
+    // 第二工作流重生成：任务级分流。未设置时直接失败，不走重试（配置问题重试无意义）
+    Workflow? wfOverride;
+    if (task.useSecond) {
+      final secondRows = await (db.select(db.workflows)..where((t) => t.isSecond.equals(true))).get();
+      if (secondRows.isEmpty) {
+        const msg = '未设置第二工作流：请到 设置 → 工作流管理，点击某个工作流的「第二」按钮';
+        debugPrint('[生图] $msg');
+        task.status = 'failed';
+        task.error = msg;
+        await (db.update(db.illustrations)..where((t) => t.id.equals(task.illustrationId)))
+            .write(const IllustrationsCompanion(status: Value('failed'), error: Value(msg)));
+        notifyListeners();
+        return;
+      }
+      wfOverride = secondRows.first;
+    }
+
     for (var attempt = 0; attempt <= settings.genRetry; attempt++) {
       try {
         final ill = await (db.select(db.illustrations)..where((t) => t.id.equals(task.illustrationId))).getSingle();
-        final wfRows = await (db.select(db.workflows)..where((t) => t.isActive.equals(true))).get();
-        if (wfRows.isEmpty) {
-          throw const GenerationException('没有启用的 ComfyUI 工作流，请到设置里导入并启用');
+        final Workflow wf;
+        if (wfOverride != null) {
+          wf = wfOverride;
+        } else {
+          final wfRows = await (db.select(db.workflows)..where((t) => t.isActive.equals(true))).get();
+          if (wfRows.isEmpty) {
+            throw const GenerationException('没有启用的 ComfyUI 工作流，请到设置里导入并启用');
+          }
+          wf = wfRows.first;
         }
-        final wf = wfRows.first;
         final mapping = WorkflowMapping.fromJson(wf.mapping);
         if (mapping.positive == null) {
           throw const GenerationException('工作流未映射「正向提示词」节点');
@@ -415,12 +439,12 @@ class GenerationService extends ChangeNotifier {
     }
   }
 
-  /// 重试单个失败插图（按数据库 id）
-  Future<void> retryOne(int illustrationId) async {
+  /// 重试单个失败插图（按数据库 id）；[useSecond] 为 true 时用第二工作流
+  Future<void> retryOne(int illustrationId, {bool useSecond = false}) async {
     final db = _requireDb();
     await (db.update(db.illustrations)..where((t) => t.id.equals(illustrationId)))
         .write(const IllustrationsCompanion(status: Value('pending'), error: Value('')));
-    _ensureQueued(illustrationId);
+    _ensureQueued(illustrationId, useSecond: useSecond);
     notifyListeners();
     if (!_running) _drain();
   }
@@ -440,8 +464,9 @@ class GenerationService extends ChangeNotifier {
     if (!_running) _drain();
   }
 
-  /// 仅重新生图（保持原提示词）
-  Future<void> regenerate(int illustrationId) => retryOne(illustrationId);
+  /// 仅重新生图（保持原提示词）；[useSecond] 为 true 时用第二工作流（图片 ↻2 入口）
+  Future<void> regenerate(int illustrationId, {bool useSecond = false}) =>
+      retryOne(illustrationId, useSecond: useSecond);
 
   /// 删除插图（含当前图与全部历史版本图片）
   Future<void> deleteIllustration(int illustrationId) async {
@@ -576,13 +601,14 @@ class GenerationService extends ChangeNotifier {
     }
   }
 
-  void _ensureQueued(int illustrationId, {String? promptPreview}) {
+  void _ensureQueued(int illustrationId, {String? promptPreview, bool useSecond = false}) {
     if (queue.any((t) => t.illustrationId == illustrationId)) {
       for (final t in queue) {
         if (t.illustrationId == illustrationId) {
           t.status = 'queued';
           t.progress = 0;
           t.error = '';
+          t.useSecond = useSecond;
           if (promptPreview != null) t.promptPreview = promptPreview;
         }
       }
@@ -592,6 +618,7 @@ class GenerationService extends ChangeNotifier {
       illustrationId: illustrationId,
       promptPreview: promptPreview ?? '',
       status: 'queued',
+      useSecond: useSecond,
     ));
     // 没有 preview 时从库里补一条
     if (promptPreview == null) {
