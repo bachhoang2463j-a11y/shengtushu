@@ -64,7 +64,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: SegmentedButton<String>(
               segments: const [
                 ButtonSegment(value: 'light', label: Text('明亮')),
-                ButtonSegment(value: 'sepia', label: Text('羊皮纸')),
+                ButtonSegment(value: 'sepia', label: Text('羊皮')),
+                ButtonSegment(value: 'green', label: Text('护眼')),
                 ButtonSegment(value: 'dark', label: Text('夜间')),
               ],
               selected: {_s.themeMode},

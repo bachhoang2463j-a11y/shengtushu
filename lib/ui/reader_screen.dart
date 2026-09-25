@@ -1,8 +1,10 @@
-// 阅读器：流式分页 / 双翻页模式 / 选中文段生图 / 插图管理 / 进度记忆
+// 阅读器：沉浸式排版（demo 原型）/ 连续滚动 + 双翻页模式 / 选中文段生图 / 插图管理 / 进度记忆
+import 'dart:async';
 import 'dart:io';
 
 import 'package:drift/drift.dart' show OrderingTerm, Value;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../data/database.dart';
 import '../reader/paginator.dart';
@@ -14,8 +16,11 @@ import 'settings_screen.dart';
 import 'theme_ext.dart';
 import 'widgets.dart';
 
-const double _padH = 20;
-const double _padV = 16;
+const double _padH = 22;
+const double _padV = 10;
+const double _paragraphSpacing = 16;
+const String kReaderFontFamily = 'NotoSansSC';
+const Color _accent = Color(0xFFE11D48); // demo 主强调色（玫红）
 
 class ReaderScreen extends StatefulWidget {
   const ReaderScreen({super.key, required this.db, required this.bookId});
@@ -37,11 +42,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Stream<List<Illustration>>? _illsStream;
 
   List<ReaderPage> _pages = const [];
+  List<int> _pageStartPara = const []; // 每页首段，滚动位置→页 的映射
   String _layoutKey = '';
   bool _repaginating = false;
   int _repaginateSeq = 0;
   double _pageHeight = 0;
   Map<int, Illustration> _illsById = const {};
+
+  // 连续滚动模式：整段流 + 累计顶边偏移（含列表顶部 padding）
+  List<LayoutItem> _flowItems = const [];
+  List<double> _flowOffsets = const [];
+  bool _scrollListening = false;
 
   PageController? _pageCtrl;
   ScrollController? _scrollCtrl;
@@ -50,14 +61,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _generating = false;
   String _selectionText = '';
 
+  // 沉浸式交互状态
+  bool _overlayVisible = false;
+  bool _stylePanelVisible = false;
+  String _lastLightTheme = 'sepia';
+  DateTime _now = DateTime.now();
+  Timer? _clockTimer;
+
   @override
   void initState() {
     super.initState();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    _clockTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
+    });
     _load();
   }
 
   @override
   void dispose() {
+    _clockTimer?.cancel();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _pageCtrl?.dispose();
     _scrollCtrl?.dispose();
     super.dispose();
@@ -166,10 +190,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
       height: size.height,
       fontSize: _settings.fontSize,
       lineHeight: _settings.lineHeight,
-      paragraphSpacing: _settings.fontSize * 0.55,
+      fontFamily: kReaderFontFamily,
+      paragraphSpacing: _paragraphSpacing,
     );
+    // 连续滚动模式的数据：整段流 + 与渲染规则一致的测高累计偏移
+    final items = _buildItems(paras, ills);
+    final heights = Paginator.estimateFlowHeights(items, config, maxImageH: size.height);
+    final offsets = Paginator.cumulativeOffsets(heights);
+    for (var i = 0; i < offsets.length; i++) {
+      offsets[i] += _padV; // ListView 顶部 padding
+    }
+    if (seq != _repaginateSeq) return;
+    if (mounted) {
+      setState(() {
+        _flowItems = items;
+        _flowOffsets = offsets;
+      });
+    }
+
     final fresh = <ReaderPage>[];
-    await for (final batch in Paginator.paginateStream(items: _buildItems(paras, ills), config: config)) {
+    await for (final batch in Paginator.paginateStream(items: items, config: config)) {
       if (seq != _repaginateSeq) return; // 已有更新的排版任务
       fresh.addAll(batch);
     }
@@ -179,6 +219,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (target < 0) target = 0;
     setState(() {
       _pages = fresh;
+      _pageStartPara = [for (final p in fresh) p.blocks.isEmpty ? 0 : p.blocks.first.paragraphIndex];
       _pageHeight = size.height;
       _repaginating = false;
       _curPage = target.clamp(0, fresh.length - 1);
@@ -193,10 +234,52 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (_pageCtrl?.hasClients ?? false) _pageCtrl!.jumpToPage(p);
     } else {
       final ctrl = _scrollCtrl;
-      if ((ctrl?.hasClients ?? false) && _pageHeight > 0) {
-        ctrl!.jumpTo((p * _pageHeight).clamp(0.0, ctrl.position.maxScrollExtent));
+      if ((ctrl?.hasClients ?? false) && _flowOffsets.isNotEmpty) {
+        final blocks = _pages[p].blocks;
+        final para = blocks.isEmpty ? 0 : blocks.first.paragraphIndex;
+        var idx = _firstItemIndexOfParagraph(para);
+        final target = _flowOffsets[idx].clamp(0.0, ctrl!.position.maxScrollExtent);
+        ctrl.jumpTo(target);
+        // 懒加载列表首帧 maxScrollExtent 未必就绪，下一帧再校准一次
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (ctrl.hasClients) {
+            ctrl.jumpTo(_flowOffsets[idx].clamp(0.0, ctrl.position.maxScrollExtent));
+          }
+        });
       }
     }
+  }
+
+  int _firstItemIndexOfParagraph(int para) {
+    for (var i = 0; i < _flowItems.length; i++) {
+      if (_flowItems[i].paragraphIndex >= para) return i;
+    }
+    return _flowItems.isEmpty ? 0 : _flowItems.length - 1;
+  }
+
+  void _onScroll() {
+    if (_flowOffsets.isEmpty || _pageStartPara.isEmpty) return;
+    final ctrl = _scrollCtrl;
+    if (ctrl == null || !ctrl.hasClients) return;
+    final idx = Paginator.flowIndexAtOffset(_flowOffsets, ctrl.offset);
+    final para = idx < _flowItems.length ? _flowItems[idx].paragraphIndex : 0;
+    final page = _pageForParagraph(para);
+    if (page >= 0 && page != _curPage) _onPageChanged(page);
+  }
+
+  /// 段落 → 所在页（页首段单调递增，可二分）
+  int _pageForParagraph(int para) {
+    var lo = 0, hi = _pageStartPara.length - 1, ans = -1;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (_pageStartPara[mid] <= para) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans;
   }
 
   void _onPageChanged(int page) {
@@ -211,6 +294,322 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final first = blocks.isEmpty ? 0 : blocks.first.paragraphIndex;
     await (widget.db.update(widget.db.books)..where((t) => t.id.equals(widget.bookId))).write(
       BooksCompanion(lastChapter: Value(_chapterIdx), lastParagraph: Value(first)),
+    );
+  }
+
+  // ---------- 沉浸式交互（demo：三分区点击 / 呼出栏 / 排版面板） ----------
+
+  void _handleTapUp(TapUpDetails d) {
+    // 有活动选区时先让 SelectionArea 处理（收起菜单），不翻页
+    if (_selectionText.isNotEmpty) return;
+    final frac = d.localPosition.dx / MediaQuery.sizeOf(context).width;
+    if (frac < 0.25) {
+      _pageShift(-1);
+    } else if (frac > 0.75) {
+      _pageShift(1);
+    } else {
+      _toggleOverlay();
+    }
+  }
+
+  void _pageShift(int delta) {
+    if (_pages.isEmpty) return;
+    _jumpTo((_curPage + delta).clamp(0, _pages.length - 1));
+  }
+
+  void _toggleOverlay() {
+    setState(() {
+      _overlayVisible = !_overlayVisible;
+      if (!_overlayVisible) _stylePanelVisible = false;
+    });
+  }
+
+  void _toggleDark() {
+    final cur = _settings.themeMode;
+    if (cur == 'dark') {
+      _settings.setThemeMode(_lastLightTheme);
+    } else {
+      _lastLightTheme = cur;
+      _settings.setThemeMode('dark');
+    }
+  }
+
+  void _adjustFontSize(double delta) {
+    final v = (_settings.fontSize + delta).clamp(12.0, 32.0);
+    _settings.setFontSize(v);
+  }
+
+  Widget _miniHeader(Chapter ch) {
+    final c = context.readerSub;
+    final hh = _now.hour.toString().padLeft(2, '0');
+    final mm = _now.minute.toString().padLeft(2, '0');
+    return SizedBox(
+      height: 38,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(_padH, 10, _padH, 4),
+        child: Row(children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: _showChapterDrawer,
+              child: Text(ch.title,
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
+            ),
+          ),
+          Text('$hh:$mm', style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _miniFooter() {
+    final c = context.readerSub;
+    final total = _pages.length;
+    final pct = total == 0 ? '' : '${(((_curPage + 1) / total) * 100).toStringAsFixed(1)}%';
+    return SizedBox(
+      height: 34,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(_padH, 0, _padH, 6),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('第 ${_curPage + 1} / $total 页', style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
+          Text(pct, style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _queueAction() {
+    return ListenableBuilder(
+      listenable: _gen,
+      builder: (context, _) => Stack(children: [
+        IconButton(
+          tooltip: '生成队列',
+          icon: const Icon(Icons.queue_outlined),
+          onPressed: _showQueueSheet,
+        ),
+        if (_gen.isBusy)
+          const Positioned(
+            right: 8, top: 8,
+            child: SizedBox(width: 9, height: 9,
+                child: CircularProgressIndicator(strokeWidth: 2)),
+          ),
+      ]),
+    );
+  }
+
+  Widget _overlayTop() {
+    return Positioned(
+      top: 0, left: 0, right: 0,
+      child: AnimatedSlide(
+        offset: _overlayVisible ? Offset.zero : const Offset(0, -1.2),
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOutCubic,
+        child: Material(
+          color: context.readerBackground.withValues(alpha: 0.96),
+          child: IgnorePointer(
+            ignoring: !_overlayVisible,
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Row(children: [
+                  IconButton(
+                    tooltip: '返回书架',
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: _showChapterDrawer,
+                      child: Text(
+                        _book?.title ?? '',
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w700, color: context.readerText),
+                      ),
+                    ),
+                  ),
+                  _queueAction(),
+                  IconButton(
+                    tooltip: '设置',
+                    icon: const Icon(Icons.settings_outlined),
+                    onPressed: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => buildSettingsScreen(widget.db))),
+                  ),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _overlayBottom() {
+    final ch = _chapter!;
+    final total = _pages.length;
+    return Positioned(
+      left: 0, right: 0, bottom: 0,
+      child: AnimatedSlide(
+        offset: _overlayVisible ? Offset.zero : const Offset(0, 1.2),
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOutCubic,
+        child: Material(
+          color: context.readerBackground.withValues(alpha: 0.96),
+          child: IgnorePointer(
+            ignoring: !_overlayVisible,
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text('第 ${_curPage + 1} / $total 页 · ${ch.title}',
+                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w600, color: context.readerSub)),
+                  Row(children: [
+                    TextButton(
+                      onPressed: _chapterIdx > 0 ? () => _switchChapter(_chapterIdx - 1) : null,
+                      child: const Text('上一章'),
+                    ),
+                    Expanded(
+                      child: Slider(
+                        value: total == 0 ? 1 : (_curPage + 1).clamp(1, total).toDouble(),
+                        min: 1,
+                        max: total < 1 ? 1 : total.toDouble(),
+                        onChanged: total < 1 ? null : (v) => _jumpTo(v.toInt() - 1),
+                        onChangeEnd: (_) => _saveProgress(),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _chapterIdx < _chapters.length - 1
+                          ? () => _switchChapter(_chapterIdx + 1)
+                          : null,
+                      child: const Text('下一章'),
+                    ),
+                  ]),
+                  Row(children: [
+                    _overlayAction(Icons.menu_book_outlined, '目录', _showChapterDrawer),
+                    _overlayAction(Icons.text_fields, '排版',
+                        () => setState(() => _stylePanelVisible = !_stylePanelVisible)),
+                    _overlayAction(
+                        _settings.themeMode == 'dark'
+                            ? Icons.light_mode_outlined
+                            : Icons.dark_mode_outlined,
+                        '夜间', _toggleDark),
+                    _overlayAction(Icons.auto_awesome, '本页生图', _generatePage, color: _accent),
+                  ]),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _overlayAction(IconData icon, String label, VoidCallback onTap, {Color? color}) {
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 20, color: color ?? context.readerText),
+            const SizedBox(height: 4),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w700, color: color ?? context.readerText)),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _stylePanelCard() {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        boxShadow: [
+          BoxShadow(color: Colors.black.withValues(alpha: 0.16), blurRadius: 35, offset: const Offset(0, 12)),
+        ],
+      ),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          Text('字号调节',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: scheme.onSurface)),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              _fontBtn('A −', () => _adjustFontSize(-1)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(_settings.fontSize.toStringAsFixed(0),
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: scheme.onSurface)),
+              ),
+              _fontBtn('A +', () => _adjustFontSize(1)),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        Row(children: [
+          Text('背景主题',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: scheme.onSurface)),
+          const Spacer(),
+          _swatch('sepia', const Color(0xFFF5EEDB)),
+          const SizedBox(width: 10),
+          _swatch('light', const Color(0xFFFAFAFA)),
+          const SizedBox(width: 10),
+          _swatch('green', const Color(0xFFE3EDE4)),
+          const SizedBox(width: 10),
+          _swatch('dark', const Color(0xFF151719)),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _fontBtn(String label, VoidCallback onTap) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        child: Text(label,
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: scheme.onSurface)),
+      ),
+    );
+  }
+
+  Widget _swatch(String theme, Color color) {
+    final active = _settings.themeMode == theme;
+    return GestureDetector(
+      onTap: () {
+        if (theme != 'dark') _lastLightTheme = theme;
+        _settings.setThemeMode(theme);
+      },
+      child: Container(
+        width: 26,
+        height: 26,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(
+              color: active ? Theme.of(context).colorScheme.primary : Colors.transparent, width: 2),
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 6)],
+        ),
+      ),
     );
   }
 
@@ -317,45 +716,78 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
 
+  /// 插图管理面板（demo 式 bottom sheet：拖动把手 + 提示词预览卡 + 圆角动作按钮）
   void _showImageMenu(ImageBlock b) {
+    final scheme = Theme.of(context).colorScheme;
     showModalBottomSheet(
       context: context,
-      builder: (c) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(
-            leading: const Icon(Icons.zoom_in_outlined),
-            title: const Text('查看大图'),
-            onTap: () {
+      backgroundColor: Colors.transparent,
+      builder: (c) => Container(
+        decoration: BoxDecoration(
+          color: scheme.surface,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        child: SafeArea(
+          top: false,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Center(
+              child: Container(
+                width: 38, height: 4,
+                decoration: BoxDecoration(
+                  color: scheme.outlineVariant,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+                border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text('当前插图提示词',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scheme.onSurfaceVariant)),
+                  InkWell(
+                    onTap: () {
+                      Clipboard.setData(ClipboardData(text: b.prompt));
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('提示词已复制')));
+                    },
+                    child: Text('复制',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scheme.primary)),
+                  ),
+                ]),
+                const SizedBox(height: 6),
+                Text(
+                  b.prompt.isEmpty ? '（无提示词）' : b.prompt,
+                  style: TextStyle(fontSize: 12, height: 1.5, color: scheme.onSurface),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 14),
+            _sheetBtn(c, Icons.zoom_in_outlined, '查看高清大图', () {
               Navigator.pop(c);
               Navigator.push(context, MaterialPageRoute(
                   builder: (_) => ImageViewerScreen(
                       imagePath: b.imagePath ?? '', prompt: b.prompt)));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.edit_note_outlined),
-            title: const Text('修改提示词并重新生图'),
-            onTap: () async {
+            }),
+            _sheetBtn(c, Icons.edit_note_outlined, '修改提示词并重新生图', () async {
               Navigator.pop(c);
               final v = await textInputDialog(context,
                   title: '生图提示词', initial: b.prompt, maxLines: 6);
               if (v != null && v.trim().isNotEmpty) {
                 await _gen.updatePromptAndRegenerate(b.illustrationId, v);
               }
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.refresh_outlined),
-            title: const Text('仅重新生图'),
-            onTap: () {
+            }),
+            _sheetBtn(c, Icons.refresh_outlined, '仅重新生图', () {
               Navigator.pop(c);
               _gen.regenerate(b.illustrationId);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.delete_outline, color: Colors.red),
-            title: const Text('删除插图', style: TextStyle(color: Colors.red)),
-            onTap: () async {
+            }),
+            _sheetBtn(c, Icons.delete_outline, '删除插图', () async {
               Navigator.pop(c);
               final ok = await showDialog<bool>(
                 context: context,
@@ -369,9 +801,36 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 ),
               );
               if (ok == true) await _gen.deleteIllustration(b.illustrationId);
-            },
+            }, danger: true),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _sheetBtn(BuildContext c, IconData icon, String label, VoidCallback onTap, {bool danger = false}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: danger ? scheme.errorContainer : scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(children: [
+              Icon(icon, size: 18, color: danger ? scheme.error : scheme.onSurface),
+              const SizedBox(width: 10),
+              Text(label,
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: danger ? scheme.error : scheme.onSurface)),
+            ]),
           ),
-        ]),
+        ),
       ),
     );
   }
@@ -469,28 +928,55 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   // ---------- 渲染 ----------
 
+  TextStyle _bodyTextStyle() {
+    return TextStyle(
+      fontSize: _settings.fontSize,
+      height: _settings.lineHeight,
+      fontFamily: kReaderFontFamily,
+      color: context.readerText,
+    );
+  }
+
+  Widget _textBody(String text) {
+    // 空段渲染为一行高，与分页器/流测高的口径一致
+    if (text.isEmpty) {
+      return SizedBox(height: _settings.fontSize * _settings.lineHeight);
+    }
+    return Text(text, textAlign: TextAlign.justify, style: _bodyTextStyle());
+  }
+
   Widget _renderBlock(PageBlock b, double fullWidth, {required int prevParIdx}) {
     if (b is ImageBlock) {
       return _renderImage(b, fullWidth);
     }
     final t = b as TextBlock;
     final spacing = (t.isFirst && t.paragraphIndex > prevParIdx)
-        ? SizedBox(height: _settings.fontSize * 0.55)
+        ? SizedBox(height: _paragraphSpacing)
         : const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         spacing,
         // 不加 GestureDetector：长按必须交给 SelectionArea 原生选字
-        Text(
-          t.text,
-          textAlign: t.isLast ? TextAlign.start : TextAlign.justify,
-          style: TextStyle(
-            fontSize: _settings.fontSize,
-            height: _settings.lineHeight,
-            color: context.readerText,
-          ),
-        ),
+        _textBody(t.text),
+      ],
+    );
+  }
+
+  /// 连续滚动模式：整段/插图直接渲染，不按页切块（段落永不劈开、间距均匀）
+  Widget _renderFlowItem(LayoutItem item, double fullWidth, {required int prevParIdx}) {
+    if (item is ImageItem) {
+      return _renderImage(item.block, fullWidth);
+    }
+    final t = item as TextItem;
+    final spacing = (t.paragraphIndex > prevParIdx)
+        ? SizedBox(height: _paragraphSpacing)
+        : const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        spacing,
+        _textBody(t.text),
       ],
     );
   }
@@ -569,18 +1055,41 @@ class _ReaderScreenState extends State<ReaderScreen> {
         error: error,
         prompt: prompt,
       )),
-      child: Container(
-        height: h,
-        margin: const EdgeInsets.symmetric(vertical: 6),
-        decoration: BoxDecoration(
-          color: context.readerBackground == Colors.white ? Colors.grey.shade100 : Colors.grey.shade900,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.grey.shade400.withValues(alpha: 0.4)),
+      child: Stack(children: [
+        Container(
+          height: h,
+          margin: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? Colors.grey.shade900
+                : Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.grey.shade400.withValues(alpha: 0.4)),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: 0.12), blurRadius: 20, offset: const Offset(0, 6)),
+            ],
+          ),
+          width: fullWidth,
+          clipBehavior: Clip.antiAlias,
+          child: child,
         ),
-        width: fullWidth,
-        clipBehavior: Clip.antiAlias,
-        child: child,
-      ),
+        Positioned(
+          right: 14, bottom: 14,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.auto_awesome, size: 10, color: Colors.white),
+              const SizedBox(width: 3),
+              Text('第 ${b.paragraphIndex + 1} 段',
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white)),
+            ]),
+          ),
+        ),
+      ]),
     );
   }
 
@@ -599,7 +1108,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  /// 选中文字后的浮动菜单：生图 / 复制 / 全选（AdaptiveTextSelectionToolbar 负责锚定定位）
+  /// 选中文字后的浮动菜单：生图 / 编辑 / 复制 / 全选（demo 胶囊样式，AdaptiveTextSelectionToolbar 负责锚定）
   Widget _selectionMenu(BuildContext context, SelectableRegionState selectableRegionState) {
     final endpoints = selectableRegionState.selectionEndpoints;
     return AdaptiveTextSelectionToolbar(
@@ -609,49 +1118,126 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ),
       children: [
         Material(
-          elevation: 4,
-          borderRadius: BorderRadius.circular(10),
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          elevation: 6,
+          borderRadius: BorderRadius.circular(999),
+          color: const Color(0xFF1E293B),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              TextButton.icon(
-                onPressed: () {
+              _pillButton(
+                '生图', Icons.auto_awesome,
+                primary: true,
+                onTap: () {
                   // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
                   final sel = _selectionText;
                   selectableRegionState.hideToolbar();
                   selectableRegionState.clearSelection();
                   _generateFromSelection(sel);
                 },
-                icon: const Icon(Icons.auto_awesome, size: 18),
-                label: const Text('生图'),
               ),
-              TextButton.icon(
-                onPressed: () => _editSelection(selectableRegionState),
-                icon: const Icon(Icons.edit_outlined, size: 18),
-                label: const Text('编辑'),
-              ),
-              TextButton.icon(
-                onPressed: () {
-                  // ignore: deprecated_member_use
-                  selectableRegionState.copySelection(SelectionChangedCause.toolbar);
-                  selectableRegionState.hideToolbar();
-                },
-                icon: const Icon(Icons.copy_outlined, size: 18),
-                label: const Text('复制'),
-              ),
-              TextButton.icon(
-                onPressed: () {
-                  selectableRegionState.selectAll(SelectionChangedCause.toolbar);
-                  selectableRegionState.hideToolbar();
-                },
-                icon: const Icon(Icons.select_all_outlined, size: 18),
-                label: const Text('全选'),
-              ),
+              _pillButton('编辑', Icons.edit_outlined,
+                  onTap: () => _editSelection(selectableRegionState)),
+              _pillButton('复制', Icons.copy_outlined, onTap: () {
+                // ignore: deprecated_member_use
+                selectableRegionState.copySelection(SelectionChangedCause.toolbar);
+                selectableRegionState.hideToolbar();
+              }),
+              _pillButton('全选', Icons.select_all_outlined, onTap: () {
+                selectableRegionState.selectAll(SelectionChangedCause.toolbar);
+                selectableRegionState.hideToolbar();
+              }),
             ]),
           ),
         ),
       ],
+    );
+  }
+
+  Widget _pillButton(String label, IconData icon, {required VoidCallback onTap, bool primary = false}) {
+    const fg = Color(0xFFE2E8F0);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: primary
+            ? BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFFE11D48), Color(0xFFF43F5E)]),
+                borderRadius: BorderRadius.circular(999),
+              )
+            : null,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 15, color: primary ? Colors.white : fg),
+          const SizedBox(width: 4),
+          Text(label,
+              style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w700, color: primary ? Colors.white : fg)),
+        ]),
+      ),
+    );
+  }
+
+  // ---------- 组装 ----------
+
+  Widget _buildContent(List<LayoutItem> items, Size size) {
+    if (_pages.isEmpty || items.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    _pageCtrl ??= PageController(initialPage: _curPage);
+    _scrollCtrl ??= ScrollController();
+
+    Widget content;
+    if (_settings.pageMode == 'page') {
+      content = PageView.builder(
+        controller: _pageCtrl,
+        itemCount: _pages.length,
+        onPageChanged: _onPageChanged,
+        itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
+      );
+    } else {
+      final ctrl = _scrollCtrl!;
+      if (!_scrollListening) {
+        _scrollListening = true;
+        ctrl.addListener(_onScroll);
+      }
+      if (!ctrl.hasClients) {
+        // 首次挂载 / 重排版后重挂：跳回当前阅读位置
+        WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(_curPage));
+      }
+      content = ListView.builder(
+        controller: ctrl,
+        padding: const EdgeInsets.symmetric(horizontal: _padH, vertical: _padV),
+        itemCount: _flowItems.length,
+        itemBuilder: (context, i) => _renderFlowItem(
+          _flowItems[i],
+          size.width,
+          prevParIdx: i == 0 ? -1 : _flowItems[i - 1].paragraphIndex,
+        ),
+      );
+    }
+    return SelectionArea(
+      onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
+      contextMenuBuilder: _selectionMenu,
+      child: Stack(children: [
+        Positioned.fill(
+          child: GestureDetector(
+            // 三分区点击：左上一页 / 右下一页 / 中央呼出控制栏（demo 交互）
+            behavior: HitTestBehavior.opaque,
+            onTapUp: _handleTapUp,
+            child: content,
+          ),
+        ),
+        if (_repaginating)
+          Positioned(
+            top: 6, right: 16,
+            child: Chip(
+              visualDensity: VisualDensity.compact,
+              backgroundColor: Colors.black45,
+              label: const Text('排版中…',
+                  style: TextStyle(fontSize: 11, color: Colors.white)),
+            ),
+          ),
+      ]),
     );
   }
 
@@ -664,40 +1250,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final paras = ch.content.split('\n');
     return Scaffold(
       backgroundColor: context.readerBackground,
-      appBar: AppBar(
-        backgroundColor: context.readerBackground,
-        title: GestureDetector(
-          onTap: _showChapterDrawer,
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            Flexible(child: Text(ch.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
-            const Icon(Icons.arrow_drop_down),
-          ]),
-        ),
-        actions: [
-          ListenableBuilder(
-            listenable: _gen,
-            builder: (context, _) => Stack(children: [
-              IconButton(
-                tooltip: '生成队列',
-                icon: const Icon(Icons.queue_outlined),
-                onPressed: _showQueueSheet,
-              ),
-              if (_gen.isBusy)
-                const Positioned(
-                  right: 8, top: 8,
-                  child: SizedBox(width: 9, height: 9,
-                      child: CircularProgressIndicator(strokeWidth: 2)),
-                ),
-            ]),
-          ),
-          IconButton(
-            tooltip: '设置',
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => buildSettingsScreen(widget.db))),
-          ),
-        ],
-      ),
       floatingActionButton: (_settings.showGenFab && !_generating)
           ? FloatingActionButton.extended(
               onPressed: _generatePage,
@@ -731,85 +1283,36 @@ class _ReaderScreenState extends State<ReaderScreen> {
               _layoutKey = key;
               Future.microtask(() => _recompute(paras, ills, size));
             }
-            if (_pages.isEmpty) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            _pageCtrl ??= PageController(initialPage: _curPage);
-            _scrollCtrl ??= ScrollController();
-
-            if (_settings.pageMode == 'page') {
-              return SelectionArea(
-                onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
-                contextMenuBuilder: _selectionMenu,
-                child: Stack(children: [
-                  PageView.builder(
-                    controller: _pageCtrl,
-                    itemCount: _pages.length,
-                    onPageChanged: _onPageChanged,
-                    itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
-                  ),
-                  if (_repaginating)
-                    Positioned(
-                      top: 6, right: 16,
-                      child: Chip(
-                        visualDensity: VisualDensity.compact,
-                        backgroundColor: Colors.black45,
-                        label: const Text('排版中…',
-                            style: TextStyle(fontSize: 11, color: Colors.white)),
-                      ),
+            return Stack(children: [
+              Column(children: [
+                _miniHeader(ch),
+                Expanded(child: _buildContent(_flowItems, size)),
+                _miniFooter(),
+              ]),
+              _overlayTop(),
+              // 快捷排版抽屉（悬浮于底栏之上）
+              Positioned(
+                left: 16, right: 16,
+                bottom: MediaQuery.paddingOf(context).bottom + 160,
+                child: AnimatedSlide(
+                  offset: _stylePanelVisible ? Offset.zero : const Offset(0, 0.3),
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
+                  child: AnimatedOpacity(
+                    opacity: _stylePanelVisible ? 1 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: IgnorePointer(
+                      ignoring: !_stylePanelVisible,
+                      child: _stylePanelCard(),
                     ),
-                ]),
-              );
-            } else {
-              final ctrl = _scrollCtrl!;
-              if (!ctrl.hasClients) {
-                ctrl.addListener(() {
-                  if (_pageHeight <= 0) return;
-                  final page = (ctrl.offset / _pageHeight).round();
-                  if (page != _curPage && page >= 0 && page < _pages.length) {
-                    _onPageChanged(page);
-                  }
-                });
-                // 首次挂载：跳回当前阅读位置
-                WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(_curPage));
-              }
-              return SelectionArea(
-                onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
-                contextMenuBuilder: _selectionMenu,
-                child: Stack(children: [
-                  ListView.builder(
-                    controller: ctrl,
-                    itemExtent: _pageHeight,
-                    itemCount: _pages.length,
-                    itemBuilder: (context, i) => _renderPage(_pages[i], size.width),
                   ),
-                  if (_repaginating)
-                    Positioned(
-                      top: 6, right: 16,
-                      child: Chip(
-                        visualDensity: VisualDensity.compact,
-                        backgroundColor: Colors.black45,
-                        label: const Text('排版中…',
-                            style: TextStyle(fontSize: 11, color: Colors.white)),
-                      ),
-                    ),
-                ]),
-              );
-            }
+                ),
+              ),
+              _overlayBottom(),
+            ]);
           });
         },
       ),
-      bottomNavigationBar: _pages.isEmpty
-          ? null
-          : BottomAppBar(
-              color: context.readerBackground,
-              height: 34,
-              padding: EdgeInsets.zero,
-              child: Text(
-                '  ${_curPage + 1} / ${_pages.length} · 第${_chapterIdx + 1}/${_chapters.length}章',
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-              ),
-            ),
     );
   }
 }

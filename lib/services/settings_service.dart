@@ -62,6 +62,13 @@ class SettingsService extends ChangeNotifier {
 
   Future<void> init() async {
     _sp = await SharedPreferences.getInstance();
+    // 一次性迁移：对齐 demo 原型的阅读排版（字号 17 / 行高 1.85 / 羊皮纸主题）
+    if (!(_sp.getBool('demoLayoutV1') ?? false)) {
+      await _sp.setDouble('fontSize', 17.0);
+      await _sp.setDouble('lineHeight', 1.85);
+      await _sp.setString('theme', 'sepia');
+      await _sp.setBool('demoLayoutV1', true);
+    }
   }
 
   String _get(String key, String def) => _sp.getString(key) ?? def;
@@ -131,9 +138,9 @@ class SettingsService extends ChangeNotifier {
       _set('personas', jsonEncode(list.map((p) => p.toJson()).toList()));
 
   // ---------- 阅读偏好 ----------
-  double get fontSize => _sp.getDouble('fontSize') ?? 18.0;
-  double get lineHeight => _sp.getDouble('lineHeight') ?? 1.6;
-  String get themeMode => _get('theme', 'light'); // light | dark | sepia
+  double get fontSize => _sp.getDouble('fontSize') ?? 17.0;
+  double get lineHeight => _sp.getDouble('lineHeight') ?? 1.85;
+  String get themeMode => _get('theme', 'sepia'); // light | sepia | green | dark
   String get pageMode => _get('pageMode', 'page'); // page | scroll
   Future<void> setFontSize(double v) async { await _sp.setDouble('fontSize', v); notifyListeners(); }
   Future<void> setLineHeight(double v) async { await _sp.setDouble('lineHeight', v); notifyListeners(); }

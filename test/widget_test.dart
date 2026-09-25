@@ -139,6 +139,38 @@ void main() {
     }
   });
 
+  test('连续滚动流：测高规则与偏移映射（段首才有段前距 / 空段一行高 / 二分往返）', () {
+    final items = <LayoutItem>[
+      TextItem(0, '　　第一段正文，内容足够长，需要排版出多行文本以验证高度计算是否正确。'),
+      ImageItem(ImageBlock(0, illustrationId: 1, status: 'pending', aspect: 16 / 9)),
+      TextItem(1, '　　第二段。'),
+      TextItem(2, ''), // 空段
+    ];
+    const config = PageLayoutConfig(
+        width: 360, height: 640, fontSize: 17, lineHeight: 1.85, paragraphSpacing: 16);
+    final heights = Paginator.estimateFlowHeights(items, config);
+    expect(heights.length, 4);
+    // 段首计入段前距
+    expect(heights[0], greaterThan(16));
+    // 同段续项（图后的段 0 剩余部分）不计段前距；图高 = 宽/aspect + 上下 margin
+    expect(heights[1], closeTo(360 / (16 / 9) + 12, 0.01));
+    // 非空段 = 段前距 + 文本实测高（测试字体度量不定，只验证夹在合理区间）
+    expect(heights[2], greaterThan(16 + 17));
+    expect(heights[2], lessThan(16 + 17 * 3));
+    // 空段 = 段前距 + 一行高（固定口径）
+    expect(heights[3], closeTo(16 + 17 * 1.85, 0.01));
+
+    final offsets = Paginator.cumulativeOffsets(heights);
+    expect(offsets[0], 0);
+    for (var i = 1; i < offsets.length; i++) {
+      expect(offsets[i], greaterThan(offsets[i - 1]), reason: '偏移必须严格单调，第 $i 项');
+    }
+    expect(Paginator.flowIndexAtOffset(offsets, 0), 0);
+    expect(Paginator.flowIndexAtOffset(offsets, offsets[1] - 0.5), 0);
+    expect(Paginator.flowIndexAtOffset(offsets, offsets[1]), 1);
+    expect(Paginator.flowIndexAtOffset(offsets, offsets[3] + 9999), 3);
+  });
+
   test('选区起点定位与精确替换', () {
     final paras = ['　　第一段原文内容甲。', '　　第二段原文内容乙，中间有目标词。', '　　第三段原文内容丙。'];
     final (sp, so) = ChapterEditor.locateSelectionStart(paras, '中间有目标词', hintParagraph: 1);

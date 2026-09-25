@@ -38,9 +38,13 @@ class ReaderPage {
 /// 版面输入项
 sealed class LayoutItem {
   const LayoutItem();
+
+  /// 该项所属的章节段落序号（0-based）
+  int get paragraphIndex;
 }
 
 class TextItem extends LayoutItem {
+  @override
   final int paragraphIndex;
   final String text;
   const TextItem(this.paragraphIndex, this.text);
@@ -49,6 +53,9 @@ class TextItem extends LayoutItem {
 class ImageItem extends LayoutItem {
   final ImageBlock block;
   const ImageItem(this.block);
+
+  @override
+  int get paragraphIndex => block.paragraphIndex;
 }
 
 class PageLayoutConfig {
@@ -180,6 +187,76 @@ class Paginator {
     if (pages.length > yieldedCount) {
       yield [for (final b in pages.sublist(yieldedCount)) ReaderPage(b)];
     }
+  }
+
+  // ---------- 连续滚动模式（上下滚动）辅助 ----------
+  // 滚动模式不按页切块渲染，整章段落直接连续排版；这两个函数提供
+  // 「滚动位置 ↔ 段落/页」的映射。测高规则必须与 reader_screen 的渲染保持一致。
+
+  /// 逐项估算连续流高度（不含页面概念）：
+  /// 段首（paragraphIndex 与前一项不同）加一次 config.paragraphSpacing；
+  /// 空段按一行高计；插图高度 = 内容宽/aspect 夹取 [minImageH, maxImageH]，再加上下 margin。
+  static List<double> estimateFlowHeights(
+    List<LayoutItem> items,
+    PageLayoutConfig config, {
+    double imageMarginV = 12,
+    double minImageH = 60,
+    double maxImageH = double.infinity,
+  }) {
+    final style = TextStyle(
+      fontSize: config.fontSize,
+      height: config.lineHeight,
+      fontFamily: config.fontFamily.isEmpty ? null : config.fontFamily,
+      color: const ui.Color(0xFF000000),
+    );
+    final heights = <double>[];
+    var prevPar = -1;
+    for (final item in items) {
+      if (item is ImageItem) {
+        final h = (config.width / item.block.aspect.clamp(0.2, 5.0)).clamp(minImageH, maxImageH);
+        heights.add(h + imageMarginV);
+      } else {
+        final par = item as TextItem;
+        double h;
+        if (par.text.isEmpty) {
+          h = config.fontSize * config.lineHeight;
+        } else {
+          final painted = _paint(par.text, style, config.width);
+          h = painted.height;
+          painted.dispose();
+        }
+        heights.add((par.paragraphIndex > prevPar ? config.paragraphSpacing : 0) + h);
+      }
+      prevPar = item.paragraphIndex;
+    }
+    return heights;
+  }
+
+  /// 高度表 → 每项顶边的累计偏移表（offsets[0] = 0）。
+  static List<double> cumulativeOffsets(List<double> heights) {
+    final offsets = List<double>.filled(heights.length, 0);
+    var acc = 0.0;
+    for (var i = 0; i < heights.length; i++) {
+      offsets[i] = acc;
+      acc += heights[i];
+    }
+    return offsets;
+  }
+
+  /// 二分：返回最后一个 offsets[i] <= y 的下标；offsets 为空返回 -1，y < offsets[0] 返回 0。
+  static int flowIndexAtOffset(List<double> offsets, double y) {
+    if (offsets.isEmpty) return -1;
+    if (y < offsets[0]) return 0;
+    var lo = 0, hi = offsets.length - 1;
+    while (lo < hi) {
+      final mid = (lo + hi + 1) >> 1;
+      if (offsets[mid] <= y) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
   }
 
   static TextPainter _paint(String text, TextStyle style, double width) {

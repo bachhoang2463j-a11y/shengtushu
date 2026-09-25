@@ -36,7 +36,12 @@ class ShengTuShuApp extends StatelessWidget {
           theme: _lightTheme(),
           darkTheme: _darkTheme(),
           home: Theme(
-            data: theme == 'sepia' ? _sepiaTheme() : (theme == 'dark' ? _darkTheme() : _lightTheme()),
+            data: switch (theme) {
+              'sepia' => _sepiaTheme(),
+              'green' => _greenTheme(),
+              'dark' => _darkTheme(),
+              _ => _lightTheme(),
+            },
             child: BookshelfScreen(db: db),
           ),
         );
@@ -46,20 +51,27 @@ class ShengTuShuApp extends StatelessWidget {
 
   ThemeData _lightTheme() => ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4A6DA7)),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF4F46E5)),
       );
 
   ThemeData _darkTheme() => ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
         colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF4A6DA7), brightness: Brightness.dark),
+            seedColor: const Color(0xFF4F46E5), brightness: Brightness.dark),
       );
 
   ThemeData _sepiaTheme() => ThemeData(
         useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF5ECD9),
+        scaffoldBackgroundColor: const Color(0xFFF5EEDB),
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF8B7355))
-            .copyWith(surface: const Color(0xFFF5ECD9)),
+            .copyWith(surface: const Color(0xFFF5EEDB)),
+      );
+
+  ThemeData _greenTheme() => ThemeData(
+        useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFFE3EDE4),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF5F7F63))
+            .copyWith(surface: const Color(0xFFE3EDE4)),
       );
 }
