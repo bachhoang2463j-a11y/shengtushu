@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>生图书 - 现代极简与静读天下UI原型</title>
+  <style>
+    :root {
+      --primary: #4F46E5;
+      --primary-hover: #4338CA;
+      --accent: #E11D48;
+      /* 羊皮纸默认主题 */
+      --reader-bg: #F5EEDB;
+      --reader-text: #2C2723;
+      --reader-sub: #7A7267;
+      --reader-overlay: rgba(245, 238, 219, 0.96);
+      --border-color: rgba(0, 0, 0, 0.08);
+      --card-bg: #FFFFFF;
+      --app-bg: #0B0F19;
+      --ui-text: #1F2937;
+      --ui-sub: #6B7280;
+    }
+
+    [data-theme="white"] {
+      --reader-bg: #FAFAFA;
+      --reader-text: #1F2937;
+      --reader-sub: #9CA3AF;
+      --reader-overlay: rgba(250, 250, 250, 0.96);
+    }
+
+    [data-theme="dark"] {
+      --reader-bg: #151719;
+      --reader-text: #D1D5DB;
+      --reader-sub: #6B7280;
+      --reader-overlay: rgba(21, 23, 25, 0.96);
+    }
+
+    [data-theme="green"] {
+      --reader-bg: #E3EDE4;
+      --reader-text: #203523;
+      --reader-sub: #657D68;
+      --reader-overlay: rgba(227, 237, 228, 0.96);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    body {
+      background: #0B0F19;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 30px 10px;
+    }
+
+    /* 顶部原型切换导航胶囊 */
+    .view-switcher {
+      position: fixed;
+      top: 14px;
+      z-index: 9999;
+      display: flex;
+      background: rgba(17, 24, 39, 0.85);
+      backdrop-filter: blur(14px);
+      padding: 4px;
+      border-radius: 9999px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .view-btn {
+      padding: 8px 16px;
+      border: none;
+      background: transparent;
+      color: #94A3B8;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: 9999px;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .view-btn.active {
+      background: var(--primary);
+      color: #FFFFFF;
+      box-shadow: 0 4px 14px rgba(79, 70, 229, 0.4);
+    }
+
+    /* 移动设备外壳框架 */
+    .device-mockup {
+      width: 385px;
+      height: 790px;
+      background: #FFFFFF;
+      border-radius: 46px;
+      box-shadow: 0 30px 70px -15px rgba(0, 0, 0, 0.8), 0 0 0 12px #1E293B, 0 0 0 14px #334155;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 常规系统状态栏（仅书架、导入、设置展示，阅读器完全全屏沉浸隐藏） */
+    .status-bar {
+      height: 36px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 24px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #1E293B;
+      z-index: 100;
+      flex-shrink: 0;
+      background: transparent;
+    }
+
+    .status-icons {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    /* 视图容器 */
+    .screen-content {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      display: none;
+    }
+
+    .screen-content.active {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ========================================================= */
+    /* 视图 1：静读天下全屏沉浸阅读器 (完全隐藏系统栏) */
+    /* ========================================================= */
+    #reader-screen {
+      background: var(--reader-bg);
+      color: var(--reader-text);
+      position: relative;
+      height: 100%;
+    }
+
+    /* 极淡微型页眉（完全取代系统顶栏，背景全透） */
+    .reader-mini-header {
+      height: 38px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding: 0 22px 4px;
+      font-size: 11px;
+      color: var(--reader-sub);
+      opacity: 0.65;
+      flex-shrink: 0;
+      letter-spacing: 0.2px;
+    }
+
+    /* 极淡微型页脚 */
+    .reader-mini-footer {
+      height: 34px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 22px 6px;
+      font-size: 11px;
+      color: var(--reader-sub);
+      opacity: 0.65;
+      flex-shrink: 0;
+    }
+
+    /* 正文阅读区 */
+    .reader-viewport {
+      flex: 1;
+      padding: 10px 22px;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .reader-page-content {
+      flex: 1;
+      font-size: 17px;
+      line-height: 1.85;
+      text-align: justify;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .reader-para {
+      text-indent: 2em;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.15s ease;
+      border-radius: 4px;
+      padding: 2px 0;
+    }
+
+    .reader-para:hover {
+      background: rgba(0, 0, 0, 0.02);
+    }
+
+    /* 模拟文字选中高亮与水滴手柄 */
+    .reader-para.selected-state {
+      background: rgba(79, 70, 229, 0.14) !important;
+      position: relative;
+    }
+
+    .selection-handle-start, .selection-handle-end {
+      position: absolute;
+      width: 2px;
+      height: 1.4em;
+      background: var(--primary);
+    }
+
+    .selection-handle-start {
+      left: 0;
+      top: 2px;
+    }
+
+    .selection-handle-end {
+      right: 0;
+      bottom: 2px;
+    }
+
+    .selection-handle-start::after, .selection-handle-end::after {
+      content: '';
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: var(--primary);
+      border-radius: 50%;
+      left: -4px;
+    }
+
+    .selection-handle-start::after {
+      top: -6px;
+    }
+
+    .selection-handle-end::after {
+      bottom: -6px;
+    }
+
+    /* 悬浮长按文字生图药丸工具条 */
+    .selection-toolbar {
+      position: absolute;
+      top: 86px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-10px);
+      background: #1E293B;
+      color: white;
+      border-radius: 999px;
+      display: flex;
+      padding: 4px 6px;
+      gap: 6px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+      z-index: 50;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .selection-toolbar.visible {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    .sel-btn {
+      background: transparent;
+      border: none;
+      color: #E2E8F0;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+
+    .sel-btn:active {
+      transform: scale(0.94);
+    }
+
+    .sel-btn.primary {
+      background: linear-gradient(135deg, #E11D48, #F43F5E);
+      color: #FFF;
+      box-shadow: 0 4px 12px rgba(225, 29, 72, 0.35);
+    }
+
+    /* 插图卡片（段落生图结果） */
+    .reader-image-card {
+      margin: 4px 0;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      position: relative;
+      background: #000;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+
+    .reader-image-card:active {
+      transform: scale(0.98);
+    }
+
+    .reader-image-card img {
+      width: 100%;
+      height: 155px;
+      object-fit: cover;
+      display: block;
+    }
+
+    .reader-image-tag {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(6px);
+      color: #FFF;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* 三段式点击触发热区 */
+    .touch-zones {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      z-index: 10;
+    }
+
+    .zone-left { width: 25%; height: 100%; }
+    .zone-center { width: 50%; height: 100%; }
+    .zone-right { width: 25%; height: 100%; }
+
+    /* 静读天下呼出式顶部导航栏 */
+    .reader-overlay-top {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      background: var(--reader-overlay);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+      z-index: 30;
+      padding: 32px 18px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transform: translateY(-100%);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .reader-overlay-top.visible {
+      transform: translateY(0);
+    }
+
+    .overlay-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--reader-text);
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 静读天下呼出式底部控制栏 */
+    .reader-overlay-bottom {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--reader-overlay);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.08);
+      z-index: 30;
+      padding: 16px 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transform: translateY(100%);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      border-top: 1px solid var(--border-color);
+    }
+
+    .reader-overlay-bottom.visible {
+      transform: translateY(0);
+    }
+
+    .slider-preview-bubble {
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--reader-sub);
+    }
+
+    .progress-control-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .chapter-skip-btn {
+      background: transparent;
+      border: none;
+      color: var(--reader-text);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 4px 8px;
+    }
+
+    .reader-slider {
+      flex: 1;
+      accent-color: var(--primary);
+      cursor: pointer;
+    }
+
+    .reader-action-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .action-btn-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      background: transparent;
+      border: none;
+      color: var(--reader-text);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 6px 0;
+      border-radius: 10px;
+    }
+
+    .action-btn-item:active {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    .action-icon {
+      font-size: 19px;
+    }
+
+    /* 快捷排版抽屉 */
+    .style-panel {
+      position: absolute;
+      bottom: 125px;
+      left: 16px;
+      right: 16px;
+      background: var(--card-bg);
+      border-radius: 20px;
+      padding: 16px;
+      box-shadow: 0 12px 35px rgba(0, 0, 0, 0.16);
+      border: 1px solid var(--border-color);
+      z-index: 35;
+      display: none;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .style-panel.visible {
+      display: flex;
+    }
+
+    .style-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .style-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--ui-text);
+    }
+
+    .font-size-adjuster {
+      display: flex;
+      align-items: center;
+      background: #F1F5F9;
+      border-radius: 999px;
+      padding: 2px;
+    }
+
+    .font-btn {
+      border: none;
+      background: transparent;
+      padding: 4px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .theme-swatches {
+      display: flex;
+      gap: 10px;
+    }
+
+    .swatch {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+    }
+
+    .swatch.active {
+      border-color: var(--primary);
+      transform: scale(1.15);
+    }
+
+    /* ========================================================= */
+    /* 长按图片弹出动作面板 (Image Action Bottom Sheet) */
+    /* ========================================================= */
+    .image-action-sheet {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(4px);
+      z-index: 60;
+      display: none;
+      align-items: flex-end;
+    }
+
+    .image-action-sheet.visible {
+      display: flex;
+    }
+
+    .sheet-card {
+      width: 100%;
+      background: #FFFFFF;
+      border-radius: 28px 28px 0 0;
+      padding: 20px 20px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.25);
+      animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes slideUp {
+      from { transform: translateY(100%); }
+      to { transform: translateY(0); }
+    }
+
+    .sheet-drag-handle {
+      width: 38px;
+      height: 4px;
+      background: #CBD5E1;
+      border-radius: 2px;
+      margin: 0 auto 4px;
+    }
+
+    .sheet-prompt-preview {
+      background: #F8FAFC;
+      border: 1px solid #E2E8F0;
+      border-radius: 14px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .sheet-prompt-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #64748B;
+    }
+
+    .sheet-prompt-text {
+      font-size: 12px;
+      color: #1E293B;
+      line-height: 1.5;
+    }
+
+    .sheet-action-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .sheet-btn {
+      width: 100%;
+      padding: 12px 16px;
+      border-radius: 14px;
+      border: none;
+      background: #F1F5F9;
+      color: #1E293B;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .sheet-btn:active {
+      background: #E2E8F0;
+    }
+
+    .sheet-btn.danger {
+      background: #FFF1F2;
+      color: #E11D48;
+    }
+
+    .sheet-btn.danger:active {
+      background: #FFE4E6;
+    }
+
+    /* ========================================================= */
+    /* 视图 2：现代极简网格书架 (Bookshelf Screen) */
+    /* ========================================================= */
+    #shelf-screen {
+      background: #F8FAFC;
+    }
+
+    .shelf-header {
+      padding: 12px 20px 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .shelf-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: #0F172A;
+    }
+
+    .shelf-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .icon-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: none;
+      background: #EDE9FE;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: bold;
+    }
+
+    .shelf-import-banner {
+      margin: 8px 16px 12px;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+      border-radius: 16px;
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 8px 20px -4px rgba(79, 70, 229, 0.35);
+      cursor: pointer;
+    }
+
+    .shelf-import-text h4 { font-size: 14px; font-weight: 700; margin-bottom: 2px; }
+    .shelf-import-text p { font-size: 11px; opacity: 0.85; }
+    .shelf-import-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .book-grid {
+      flex: 1;
+      padding: 0 16px 20px;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      align-content: start;
+    }
+
+    .book-card {
+      background: #FFFFFF;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      border: 1px solid rgba(0, 0, 0, 0.04);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .book-cover {
+      height: 140px;
+      position: relative;
+      background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 12px;
+      color: white;
+      overflow: hidden;
+    }
+
+    .book-cover.theme-amber { background: linear-gradient(135deg, #F59E0B 0%, #B45309 100%); }
+    .book-cover.theme-emerald { background: linear-gradient(135deg, #10B981 0%, #047857 100%); }
+    .book-cover.theme-rose { background: linear-gradient(135deg, #F43F5E 0%, #BE123C 100%); }
+
+    .book-badge-format {
+      font-size: 9px;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 2px 6px;
+      border-radius: 6px;
+      align-self: flex-start;
+      font-weight: 700;
+    }
+
+    .book-cover-title {
+      font-size: 15px;
+      font-weight: 800;
+      line-height: 1.3;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+      z-index: 1;
+    }
+
+    .book-spine-line {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 4px;
+      background: rgba(255, 255, 255, 0.25);
+    }
+
+    .book-info {
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .book-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1E293B;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .progress-bar {
+      height: 4px;
+      background: #E2E8F0;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--primary);
+    }
+
+    .book-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 10px;
+      color: #64748B;
+    }
+
+    .ill-badge {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      color: #E11D48;
+      font-weight: 700;
+      background: #FFE4E6;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    /* ========================================================= */
+    /* 视图 3：静读天下导入套件 (Import Screen) */
+    /* ========================================================= */
+    #import-screen {
+      background: #F8FAFC;
+    }
+
+    .import-header {
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #FFF;
+      border-bottom: 1px solid #E2E8F0;
+    }
+
+    .import-header-title { font-size: 16px; font-weight: 700; color: #0F172A; }
+
+    .import-tabs {
+      display: flex;
+      background: #FFF;
+      padding: 0 16px;
+      border-bottom: 1px solid #E2E8F0;
+    }
+
+    .import-tab {
+      padding: 12px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #64748B;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+    }
+
+    .import-tab.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+
+    .import-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .file-item-row {
+      background: #FFF;
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
+      border: 1px solid #F1F5F9;
+      cursor: pointer;
+    }
+
+    .file-checkbox { width: 18px; height: 18px; accent-color: var(--primary); }
+    .file-icon { font-size: 24px; color: #4F46E5; }
+    .file-details { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+    .file-title { font-size: 13px; font-weight: 600; color: #1E293B; }
+    .file-sub { font-size: 11px; color: #94A3B8; display: flex; gap: 8px; }
+    .file-tag { font-size: 9px; background: #F1F5F9; padding: 1px 4px; border-radius: 4px; color: #64748B; }
+
+    .import-bottom-bar {
+      padding: 12px 16px 20px;
+      background: #FFF;
+      border-top: 1px solid #E2E8F0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .select-all-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #475569;
+      font-weight: 600;
+    }
+
+    .do-import-btn {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* ========================================================= */
+    /* 视图 4：现代高质感设置界面 (Settings Screen) */
+    /* ========================================================= */
+    #settings-screen {
+      background: #F8FAFC;
+    }
+
+    .settings-header {
+      padding: 12px 18px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #FFF;
+      border-bottom: 1px solid #E2E8F0;
+    }
+
+    .settings-title { font-size: 17px; font-weight: 800; color: #0F172A; }
+
+    .settings-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .settings-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .settings-group-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: #64748B;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding-left: 4px;
+    }
+
+    .settings-card {
+      background: #FFFFFF;
+      border-radius: 18px;
+      border: 1px solid #E2E8F0;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+    }
+
+    .settings-item {
+      padding: 14px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #F1F5F9;
+      cursor: pointer;
+    }
+
+    .settings-item:last-child {
+      border-bottom: none;
+    }
+
+    .settings-item-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .settings-item-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #1E293B;
+    }
+
+    .settings-item-desc {
+      font-size: 11px;
+      color: #94A3B8;
+    }
+
+    .settings-badge {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #10B981;
+      background: #ECFDF5;
+      padding: 4px 10px;
+      border-radius: 999px;
+    }
+
+    .settings-switch {
+      width: 44px;
+      height: 24px;
+      background: var(--primary);
+      border-radius: 999px;
+      position: relative;
+      cursor: pointer;
+    }
+
+    .settings-switch::after {
+      content: '';
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      top: 2px;
+      right: 2px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    /* 提示横幅 */
+    .toast-tip {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(8px);
+      color: white;
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      z-index: 999;
+    }
+
+    .toast-tip.show { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部无感方案切换条 -->
+  <div class="view-switcher">
+    <button class="view-btn active" onclick="switchView('reader')">
+      <span>📖</span> 沉浸阅读 (静读天下)
+    </button>
+    <button class="view-btn" onclick="switchView('shelf')">
+      <span>📚</span> 极简网格书架
+    </button>
+    <button class="view-btn" onclick="switchView('import')">
+      <span>📥</span> 导入套件
+    </button>
+    <button class="view-btn" onclick="switchView('settings')">
+      <span>⚙️</span> 美化设置
+    </button>
+  </div>
+
+  <!-- 手机外壳容器 -->
+  <div class="device-mockup">
+
+    <!-- 系统状态栏：仅书架/导入/设置显示，阅读器完全全屏隐藏 -->
+    <div class="status-bar" id="device-status-bar" style="display:none;">
+      <span>09:41</span>
+      <div class="status-icons">
+        <span>5G</span>
+        <span>88%</span>
+      </div>
+    </div>
+
+    <!-- ==================== 视图 1：静读天下全屏沉浸阅读器 ==================== -->
+    <div class="screen-content active" id="reader-screen">
+      
+      <!-- 极淡微型页眉（完全取代系统顶栏，背景全透） -->
+      <div class="reader-mini-header">
+        <span>第一章 · 破败古庙中的奇异古书</span>
+        <span id="mini-time">09:41</span>
+      </div>
+
+      <!-- 阅读主视口 -->
+      <div class="reader-viewport" id="viewport">
+        <!-- 三段式手势区域 -->
+        <div class="touch-zones">
+          <div class="zone-left" onclick="prevPage()" title="点击左侧：上一页"></div>
+          <div class="zone-center" onclick="toggleOverlays()" title="点击中央：呼出/隐藏静读天下控制栏"></div>
+          <div class="zone-right" onclick="nextPage()" title="点击右侧：下一页"></div>
+        </div>
+
+        <!-- 页面正文内容 -->
+        <div class="reader-page-content" id="reader-text-container">
+          <p class="reader-para" id="p1" onclick="selectParagraph(1)">
+            雷雨如瓢泼般倾泻在破败的瓦片上，发出沉闷而连绵的敲击声。陈青云将油灯护在掌心，微弱的火光在冷冽的穿堂风中摇曳不定，将他纤瘦的身影拉长在斑驳的剥落佛像脚下。
+          </p>
+          <p class="reader-para selected-state" id="p2" onclick="selectParagraph(2)">
+            <span class="selection-handle-start"></span>
+            那尊石佛早已在百年岁月里失了金漆，半边佛面湮灭于坍塌的青砖瓦砾之中，唯有一双石眼在闪电骤亮的一瞬，泛出诡谲的青灰色微光。
+            <span class="selection-handle-end"></span>
+          </p>
+
+          <!-- 模拟插图（点击/长按即可弹出高级动作面板） -->
+          <div class="reader-image-card" onclick="openImageActionSheet(event)">
+            <img src="https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=600&q=80" alt="破庙闪电佛像">
+            <div class="reader-image-tag">
+              <span>🎨 点击管理插图</span> · <span>第 2 段</span>
+            </div>
+          </div>
+
+          <p class="reader-para" id="p3" onclick="selectParagraph(3)">
+            他蹲下身，伸手探入石佛坍塌的基座缝隙。触手所及并非冰冷的石块，而是一层极其细腻、温润若初生婴儿肌肤般的古旧皮革。
+          </p>
+        </div>
+      </div>
+
+      <!-- 极淡微型页脚 -->
+      <div class="reader-mini-footer">
+        <span id="mini-page">第 12 / 85 页</span>
+        <span id="mini-progress">14.1%</span>
+      </div>
+
+      <!-- 选中文字后浮动弹出的面板（含【🎨 选择生图】） -->
+      <div class="selection-toolbar visible" id="sel-toolbar">
+        <button class="sel-btn primary" onclick="generateFromSelection()">
+          <span>🎨</span> 选择生图
+        </button>
+        <button class="sel-btn" onclick="copySelection()">复制</button>
+        <button class="sel-btn" onclick="highlightSelection()">高亮</button>
+      </div>
+
+      <!-- 呼出式顶部导航栏 -->
+      <div class="reader-overlay-top" id="overlay-top">
+        <button class="icon-btn" onclick="switchView('shelf')" style="background:transparent;color:var(--reader-text);">
+          ✕
+        </button>
+        <div class="overlay-title">大奉打更人</div>
+        <button class="icon-btn" onclick="showToast('书签已保存')" style="background:transparent;color:var(--reader-text);">
+          🔖
+        </button>
+      </div>
+
+      <!-- 快捷视觉排版抽屉 -->
+      <div class="style-panel" id="style-panel">
+        <div class="style-row">
+          <span class="style-label">字号调节</span>
+          <div class="font-size-adjuster">
+            <button class="font-btn" onclick="changeFontSize(-1)">A -</button>
+            <span style="font-size:12px;font-weight:700;padding:0 8px;" id="font-size-val">17</span>
+            <button class="font-btn" onclick="changeFontSize(1)">A +</button>
+          </div>
+        </div>
+        <div class="style-row">
+          <span class="style-label">背景主题</span>
+          <div class="theme-swatches">
+            <div class="swatch active" style="background:#F5EEDB;" onclick="setReaderTheme('sepia', this)" title="羊皮纸"></div>
+            <div class="swatch" style="background:#FAFAFA;" onclick="setReaderTheme('white', this)" title="纯白"></div>
+            <div class="swatch" style="background:#E3EDE4;" onclick="setReaderTheme('green', this)" title="护眼绿"></div>
+            <div class="swatch" style="background:#151719;" onclick="setReaderTheme('dark', this)" title="夜间"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 呼出式底部控制栏 -->
+      <div class="reader-overlay-bottom" id="overlay-bottom">
+        <div class="slider-preview-bubble" id="slider-bubble">第 12 / 85 页 · 第一章</div>
+        <div class="progress-control-row">
+          <button class="chapter-skip-btn" onclick="showToast('已跳转到上一章')">上一章</button>
+          <input type="range" class="reader-slider" min="1" max="85" value="12" oninput="onSlide(this.value)">
+          <button class="chapter-skip-btn" onclick="showToast('已跳转到下一章')">下一章</button>
+        </div>
+        <div class="reader-action-grid">
+          <button class="action-btn-item" onclick="showToast('打开章节目录抽屉')">
+            <span class="action-icon">📑</span>
+            <span>目录</span>
+          </button>
+          <button class="action-btn-item" onclick="toggleStylePanel()">
+            <span class="action-icon">🔤</span>
+            <span>排版</span>
+          </button>
+          <button class="action-btn-item" onclick="toggleDarkMode()">
+            <span class="action-icon">🌙</span>
+            <span>夜间</span>
+          </button>
+          <button class="action-btn-item" onclick="generateCurrentPage()">
+            <span class="action-icon" style="color:#E11D48;">✨</span>
+            <span style="color:#E11D48;">本页生图</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 长按/点击图片弹出的管理面板 (Bottom Sheet) -->
+      <div class="image-action-sheet" id="image-action-sheet" onclick="closeImageActionSheet()">
+        <div class="sheet-card" onclick="event.stopPropagation()">
+          <div class="sheet-drag-handle"></div>
+          
+          <div class="sheet-prompt-preview">
+            <div class="sheet-prompt-header">
+              <span>🖼️ 当前插图提示词</span>
+              <span style="color:var(--primary);cursor:pointer;" onclick="showToast('提示词已复制')">复制</span>
+            </div>
+            <div class="sheet-prompt-text">
+              1boy, Chen Qingyun, holding an oil lamp in ruined ancient temple, rain pouring outside, dramatic lightning, half-destroyed stone Buddha statue, cinematic lighting, masterpiece.
+            </div>
+          </div>
+
+          <div class="sheet-action-list">
+            <button class="sheet-btn" onclick="closeImageActionSheet();showToast('正在打开高清查看器…')">
+              <span>🔍</span> 查看高清大图
+            </button>
+            <button class="sheet-btn" onclick="closeImageActionSheet();showToast('打开修改提示词对话框…')">
+              <span>✏️</span> 修改提示词并重新生图
+            </button>
+            <button class="sheet-btn" onclick="closeImageActionSheet();showToast('🔄 已重新提交至 ComfyUI 队列！')">
+              <span>🔄</span> 仅重新生图
+            </button>
+            <button class="sheet-btn danger" onclick="closeImageActionSheet();showToast('🗑️ 该插图及其本地缓存已删除')">
+              <span>🗑️</span> 删除插图
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 视图 2：现代极简网格书架 ==================== -->
+    <div class="screen-content" id="shelf-screen">
+      <div class="shelf-header">
+        <h2 class="shelf-title">我的书架</h2>
+        <div class="shelf-actions">
+          <button class="icon-btn" onclick="showToast('书架搜索')">🔍</button>
+          <button class="icon-btn" onclick="switchView('import')">➕</button>
+        </div>
+      </div>
+
+      <div class="shelf-import-banner" onclick="switchView('import')">
+        <div class="shelf-import-text">
+          <h4>智能扫描与导入</h4>
+          <p>已发现 4 本待入库本地小说</p>
+        </div>
+        <div class="shelf-import-btn">一键扫描</div>
+      </div>
+
+      <div class="book-grid">
+        <div class="book-card" onclick="switchView('reader')">
+          <div class="book-cover">
+            <div class="book-spine-line"></div>
+            <span class="book-badge-format">TXT</span>
+            <div class="book-cover-title">大奉<br>打更人</div>
+          </div>
+          <div class="book-info">
+            <div class="book-name">大奉打更人.txt</div>
+            <div class="progress-bar"><div class="progress-fill" style="width: 14%;"></div></div>
+            <div class="book-meta">
+              <span>第 1 章 · 14%</span>
+              <div class="ill-badge">🎨 12 图</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="book-card" onclick="switchView('reader')">
+          <div class="book-cover theme-emerald">
+            <div class="book-spine-line"></div>
+            <span class="book-badge-format">DOCX</span>
+            <div class="book-cover-title">诡秘<br>之主</div>
+          </div>
+          <div class="book-info">
+            <div class="book-name">诡秘之主第一部.docx</div>
+            <div class="progress-bar"><div class="progress-fill" style="width: 48%;"></div></div>
+            <div class="book-meta">
+              <span>第 34 章 · 48%</span>
+              <div class="ill-badge">🎨 28 图</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="book-card" onclick="switchView('reader')">
+          <div class="book-cover theme-amber">
+            <div class="book-spine-line"></div>
+            <span class="book-badge-format">TXT</span>
+            <div class="book-cover-title">道诡<br>异仙</div>
+          </div>
+          <div class="book-info">
+            <div class="book-name">道诡异仙全集.txt</div>
+            <div class="progress-bar"><div class="progress-fill" style="width: 82%;"></div></div>
+            <div class="book-meta">
+              <span>第 120 章 · 82%</span>
+              <div class="ill-badge">🎨 5 图</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="book-card" onclick="switchView('reader')">
+          <div class="book-cover theme-rose">
+            <div class="book-spine-line"></div>
+            <span class="book-badge-format">TXT</span>
+            <div class="book-cover-title">剑来</div>
+          </div>
+          <div class="book-info">
+            <div class="book-name">剑来第1-5卷.txt</div>
+            <div class="progress-bar"><div class="progress-fill" style="width: 5%;"></div></div>
+            <div class="book-meta">
+              <span>第 8 章 · 5%</span>
+              <div class="ill-badge">🎨 0 图</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 视图 3：静读天下导入套件 ==================== -->
+    <div class="screen-content" id="import-screen">
+      <div class="import-header">
+        <span class="import-header-title">导入本地书籍</span>
+        <button class="icon-btn" onclick="showToast('打开系统文件选择器')">📂</button>
+      </div>
+
+      <div class="import-tabs">
+        <div class="import-tab active" id="tab-scan" onclick="switchImportTab('scan')">智能扫描 (4)</div>
+        <div class="import-tab" id="tab-folder" onclick="switchImportTab('folder')">目录浏览</div>
+      </div>
+
+      <div class="import-content" id="import-scan-content">
+        <div class="file-item-row" onclick="toggleCheck('c1')">
+          <input type="checkbox" class="file-checkbox" id="c1" checked onclick="event.stopPropagation()">
+          <span class="file-icon">📄</span>
+          <div class="file-details">
+            <div class="file-title">赛博朋克边缘行者前传.txt</div>
+            <div class="file-sub"><span>1.8 MB</span> · <span>/Download/Novel</span> · <span class="file-tag">TXT</span></div>
+          </div>
+        </div>
+        <div class="file-item-row" onclick="toggleCheck('c2')">
+          <input type="checkbox" class="file-checkbox" id="c2" checked onclick="event.stopPropagation()">
+          <span class="file-icon">📄</span>
+          <div class="file-details">
+            <div class="file-title">灵境行者最新精校版.txt</div>
+            <div class="file-sub"><span>4.2 MB</span> · <span>/Documents</span> · <span class="file-tag">TXT</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="import-content" id="import-folder-content" style="display:none;">
+        <div class="file-item-row"><span class="file-icon" style="color:#F59E0B;">📂</span><div class="file-details"><div class="file-title">Novels/</div></div></div>
+      </div>
+
+      <div class="import-bottom-bar">
+        <label class="select-all-box">
+          <input type="checkbox" id="select-all" checked onchange="toggleSelectAll(this.checked)">
+          <span>全选所搜书籍</span>
+        </label>
+        <button class="do-import-btn" onclick="executeBatchImport()">立即导入 (2 本)</button>
+      </div>
+    </div>
+
+    <!-- ==================== 视图 4：现代高质感设置界面 ==================== -->
+    <div class="screen-content" id="settings-screen">
+      <div class="settings-header">
+        <span class="settings-title">偏好与服务设置</span>
+      </div>
+
+      <div class="settings-body">
+        <div class="settings-group">
+          <span class="settings-group-label">阅读排版与交互</span>
+          <div class="settings-card">
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <span class="settings-item-title">字号与行高</span>
+                <span class="settings-item-desc">当前 17.0 pt · 行高 1.85</span>
+              </div>
+              <span style="color:#94A3B8;font-size:14px;">›</span>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <span class="settings-item-title">默认阅读主题</span>
+                <span class="settings-item-desc">羊皮纸纸张微纹理</span>
+              </div>
+              <div class="swatch" style="background:#F5EEDB;width:20px;height:20px;"></div>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <span class="settings-item-title">沉浸式全屏阅读</span>
+                <span class="settings-item-desc">完全隐藏系统状态栏与底部手势条</span>
+              </div>
+              <div class="settings-switch"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <span class="settings-group-label">ComfyUI 局域网生图引擎</span>
+          <div class="settings-card">
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <span class="settings-item-title">服务器地址</span>
+                <span class="settings-item-desc">http://192.168.1.100:8188</span>
+              </div>
+              <div class="settings-badge">
+                <span style="width:6px;height:6px;background:#10B981;border-radius:50%;"></span>
+                已连通 (14ms)
+              </div>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <span class="settings-item-title">工作流映射</span>
+                <span class="settings-item-desc">生图模型 checkpoint: animagineXL_v30.safetensors</span>
+              </div>
+              <span style="color:#94A3B8;font-size:14px;">›</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <span class="settings-group-label">LLM 提示词提炼（OpenAI 兼容）</span>
+          <div class="settings-card">
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <span class="settings-item-title">模型接口</span>
+                <span class="settings-item-desc">DeepSeek-V3 (api.deepseek.com)</span>
+              </div>
+              <span style="color:#94A3B8;font-size:14px;">›</span>
+            </div>
+            <div class="settings-item">
+              <div class="settings-item-info">
+                <span class="settings-item-title">段落生图前置历史上下文</span>
+                <span class="settings-item-desc">携带前 3 段剧情作为人物与环境参考</span>
+              </div>
+              <span style="font-weight:700;color:var(--primary);font-size:13px;">3 段</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 交互提示气泡 -->
+    <div class="toast-tip" id="toast-tip">提示文本</div>
+
+  </div>
+
+  <script>
+    function switchView(viewName) {
+      document.querySelectorAll('.screen-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.view-btn').forEach(el => el.classList.remove('active'));
+      const bar = document.getElementById('device-status-bar');
+
+      if (viewName === 'reader') {
+        document.getElementById('reader-screen').classList.add('active');
+        document.querySelectorAll('.view-btn')[0].classList.add('active');
+        bar.style.display = 'none'; // 阅读器内部完全隐藏系统状态栏
+      } else if (viewName === 'shelf') {
+        document.getElementById('shelf-screen').classList.add('active');
+        document.querySelectorAll('.view-btn')[1].classList.add('active');
+        bar.style.display = 'flex';
+      } else if (viewName === 'import') {
+        document.getElementById('import-screen').classList.add('active');
+        document.querySelectorAll('.view-btn')[2].classList.add('active');
+        bar.style.display = 'flex';
+      } else if (viewName === 'settings') {
+        document.getElementById('settings-screen').classList.add('active');
+        document.querySelectorAll('.view-btn')[3].classList.add('active');
+        bar.style.display = 'flex';
+      }
+    }
+
+    let overlaysVisible = false;
+    function toggleOverlays() {
+      overlaysVisible = !overlaysVisible;
+      const top = document.getElementById('overlay-top');
+      const bottom = document.getElementById('overlay-bottom');
+      const stylePanel = document.getElementById('style-panel');
+      
+      if (overlaysVisible) {
+        top.classList.add('visible');
+        bottom.classList.add('visible');
+        top.style.transform = 'translateY(0)';
+        bottom.style.transform = 'translateY(0)';
+      } else {
+        top.classList.remove('visible');
+        bottom.classList.remove('visible');
+        stylePanel.classList.remove('visible');
+        top.style.transform = 'translateY(-100%)';
+        bottom.style.transform = 'translateY(100%)';
+      }
+      hideSelectionToolbar();
+    }
+
+    let curPage = 12;
+    function prevPage() {
+      if (curPage > 1) curPage--;
+      updatePageInfo();
+      showToast('翻到上一页：第 ' + curPage + ' 页');
+    }
+    function nextPage() {
+      if (curPage < 85) curPage++;
+      updatePageInfo();
+      showToast('翻到下一页：第 ' + curPage + ' 页');
+    }
+    function onSlide(val) {
+      curPage = parseInt(val);
+      updatePageInfo();
+    }
+    function updatePageInfo() {
+      const pct = ((curPage / 85) * 100).toFixed(1) + '%';
+      document.getElementById('mini-page').innerText = '第 ' + curPage + ' / 85 页';
+      document.getElementById('mini-progress').innerText = pct;
+      document.getElementById('slider-bubble').innerText = '第 ' + curPage + ' / 85 页 · 第一章';
+    }
+
+    function selectParagraph(idx) {
+      document.querySelectorAll('.reader-para').forEach(p => p.classList.remove('selected-state'));
+      const p = document.getElementById('p' + idx);
+      p.classList.add('selected-state');
+      const toolbar = document.getElementById('sel-toolbar');
+      toolbar.classList.add('visible');
+      showToast('长按选中第 ' + idx + ' 段文字');
+    }
+    function hideSelectionToolbar() {
+      document.getElementById('sel-toolbar').classList.remove('visible');
+    }
+    function generateFromSelection() {
+      hideSelectionToolbar();
+      showToast('🎨 已提交所选段落到 ComfyUI 排队生图！');
+    }
+    function copySelection() {
+      hideSelectionToolbar();
+      showToast('已复制文本');
+    }
+    function highlightSelection() {
+      hideSelectionToolbar();
+      showToast('已高亮标记');
+    }
+    function generateCurrentPage() {
+      showToast('✨ 正在提取本页上下文，呼叫 ComfyUI 排队生图…');
+    }
+
+    function openImageActionSheet(e) {
+      e.stopPropagation();
+      document.getElementById('image-action-sheet').classList.add('visible');
+    }
+    function closeImageActionSheet() {
+      document.getElementById('image-action-sheet').classList.remove('visible');
+    }
+
+    function toggleStylePanel() {
+      document.getElementById('style-panel').classList.toggle('visible');
+    }
+    let curFontSize = 17;
+    function changeFontSize(delta) {
+      curFontSize = Math.max(12, Math.min(26, curFontSize + delta));
+      document.getElementById('font-size-val').innerText = curFontSize;
+      document.getElementById('reader-text-container').style.fontSize = curFontSize + 'px';
+    }
+    function setReaderTheme(theme, el) {
+      document.getElementById('reader-screen').setAttribute('data-theme', theme);
+      document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+      el.classList.add('active');
+    }
+    let isDark = false;
+    function toggleDarkMode() {
+      isDark = !isDark;
+      document.getElementById('reader-screen').setAttribute('data-theme', isDark ? 'dark' : 'sepia');
+      showToast(isDark ? '已切换至夜间模式' : '已切换至日间模式');
+    }
+
+    function switchImportTab(tab) {
+      if (tab === 'scan') {
+        document.getElementById('tab-scan').classList.add('active');
+        document.getElementById('tab-folder').classList.remove('active');
+        document.getElementById('import-scan-content').style.display = 'flex';
+        document.getElementById('import-folder-content').style.display = 'none';
+      } else {
+        document.getElementById('tab-folder').classList.add('active');
+        document.getElementById('tab-scan').classList.remove('active');
+        document.getElementById('import-folder-content').style.display = 'flex';
+        document.getElementById('import-scan-content').style.display = 'none';
+      }
+    }
+    function toggleCheck(id) {
+      const box = document.getElementById(id);
+      box.checked = !box.checked;
+    }
+    function toggleSelectAll(checked) {
+      document.querySelectorAll('#import-scan-content .file-checkbox').forEach(c => c.checked = checked);
+    }
+    function executeBatchImport() {
+      showToast('✅ 成功导入 2 本书籍到书架！');
+      setTimeout(() => switchView('shelf'), 800);
+    }
+
+    let toastTimer;
+    function showToast(text) {
+      clearTimeout(toastTimer);
+      const tip = document.getElementById('toast-tip');
+      tip.innerText = text;
+      tip.classList.add('show');
+      toastTimer = setTimeout(() => tip.classList.remove('show'), 1500);
+    }
+  </script>
+</body>
+</html>
