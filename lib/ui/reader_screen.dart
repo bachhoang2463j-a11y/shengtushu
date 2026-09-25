@@ -500,6 +500,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ]),
                   Row(children: [
                     _overlayAction(Icons.menu_book_outlined, '目录', _showChapterDrawer),
+                    _overlayAction(Icons.photo_library_outlined, '图片', _showImageManager),
                     _overlayAction(Icons.text_fields, '排版',
                         () => setState(() => _stylePanelVisible = !_stylePanelVisible)),
                     _overlayAction(
@@ -737,6 +738,46 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
 
   /// 插图管理面板（demo 式 bottom sheet：拖动把手 + 提示词预览卡 + 圆角动作按钮）
+  /// 大图页删除当前查看的这张：删文件并同步 DB（当前图被删则提升最近一张历史）
+  Future<void> _deleteCurrentImage(int illustrationId, String path) async {
+    await _gen.deleteIllustrationImages({illustrationId: [path]});
+    _histOffset.remove(illustrationId); // 提升后重新对齐到最新一张
+    if (mounted) Navigator.pop(context); // 关闭大图页，回阅读器
+  }
+
+  /// 跳到指定段落（图片管理跳转用）
+  void _jumpToParagraph(int para) {
+    if (_pages.isEmpty) return;
+    if (_settings.pageMode == 'page') {
+      var page = _pageForParagraph(para);
+      if (page < 0) page = 0;
+      _jumpTo(page);
+    } else {
+      final ctrl = _scrollCtrl;
+      if ((ctrl?.hasClients ?? false) && _flowOffsets.isNotEmpty) {
+        final idx = _firstItemIndexOfParagraph(para);
+        ctrl!.jumpTo(_flowOffsets[idx].clamp(0.0, ctrl.position.maxScrollExtent));
+      }
+    }
+  }
+
+  /// 图片管理面板：本书全部插图（含历史版本），点按跳段落，多选删除
+  void _showImageManager() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (c) => _ImageManagerSheet(
+        db: widget.db,
+        bookId: widget.bookId,
+        onJump: (para) {
+          Navigator.pop(c);
+          _jumpToParagraph(para);
+        },
+        onDelete: _gen.deleteIllustrationImages,
+      ),
+    );
+  }
+
   void _showImageMenu(ImageBlock b) {
     final scheme = Theme.of(context).colorScheme;
     showModalBottomSheet(
@@ -793,7 +834,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
               Navigator.pop(c);
               Navigator.push(context, MaterialPageRoute(
                   builder: (_) => ImageViewerScreen(
-                      imagePath: b.imagePath ?? '', prompt: b.prompt)));
+                      imagePath: b.imagePath ?? '', prompt: b.prompt,
+                      onDelete: (b.imagePath ?? '').isEmpty
+                          ? null
+                          : () => _deleteCurrentImage(b.illustrationId, b.imagePath!))));
             }),
             _sheetBtn(c, Icons.edit_note_outlined, '修改提示词并重新生图', () async {
               Navigator.pop(c);
@@ -1050,7 +1094,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
             } else {
               Navigator.push(context, MaterialPageRoute(
                   builder: (_) => ImageViewerScreen(
-                      imagePath: imagePath ?? '', prompt: prompt)));
+                      imagePath: imagePath ?? '', prompt: prompt,
+                      onDelete: (imagePath ?? '').isEmpty
+                          ? null
+                          : () => _deleteCurrentImage(b.illustrationId, imagePath!))));
             }
           },
           child: Image.file(
@@ -1360,6 +1407,193 @@ class _ReaderScreenState extends State<ReaderScreen> {
           });
         },
       ),
+    );
+  }
+}
+
+/// 图片管理面板：显示本书生成的所有图片（含历史版本），
+/// 点按跳转到对应段落；多选删除以清理体积。
+class _ImageManagerSheet extends StatefulWidget {
+  const _ImageManagerSheet({
+    required this.db,
+    required this.bookId,
+    required this.onJump,
+    required this.onDelete,
+  });
+
+  final AppDatabase db;
+  final int bookId;
+  final void Function(int paragraph) onJump;
+  final Future<void> Function(Map<int, List<String>> targets) onDelete;
+
+  @override
+  State<_ImageManagerSheet> createState() => _ImageManagerSheetState();
+}
+
+class _ImageManagerSheetState extends State<_ImageManagerSheet> {
+  List<({int illId, int para, String path, bool current})> _items = const [];
+  final Set<String> _selected = {};
+  bool _multi = false;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final rows = await (widget.db.select(widget.db.illustrations)
+          ..where((t) => t.bookId.equals(widget.bookId))
+          ..orderBy([(t) => OrderingTerm.asc(t.afterParagraph)]))
+        .get();
+    final items = <({int illId, int para, String path, bool current})>[];
+    for (final ill in rows) {
+      for (final h in GenerationService.decodeHistory(ill.history)) {
+        items.add((illId: ill.id, para: ill.afterParagraph, path: h, current: false));
+      }
+      final cur = ill.imagePath;
+      if (cur != null && cur.isNotEmpty) {
+        items.add((illId: ill.id, para: ill.afterParagraph, path: cur, current: true));
+      }
+    }
+    if (mounted) {
+      setState(() {
+        _items = items;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _deleteSelected() async {
+    final byIll = <int, List<String>>{};
+    for (final it in _items) {
+      if (_selected.contains(it.path)) (byIll[it.illId] ??= []).add(it.path);
+    }
+    if (byIll.isEmpty) return;
+    await widget.onDelete(byIll);
+    _selected.clear();
+    await _load();
+  }
+
+  Future<void> _confirmDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('删除所选图片'),
+        content: Text('将删除 ${_selected.length} 张图片文件，当前图被删后该位置回到待生成，确定？'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('删除')),
+        ],
+      ),
+    );
+    if (ok == true) await _deleteSelected();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: MediaQuery.heightOf(context) * 0.75,
+      child: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+          child: Row(children: [
+            Text('图片管理 · ${_items.length} 张',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: scheme.onSurface)),
+            const Spacer(),
+            TextButton(
+              onPressed: () => setState(() {
+                _multi = !_multi;
+                _selected.clear();
+              }),
+              child: Text(_multi ? '退出多选' : '多选'),
+            ),
+            if (_multi)
+              TextButton(
+                onPressed: _selected.isEmpty ? null : _confirmDelete,
+                style: TextButton.styleFrom(foregroundColor: scheme.error),
+                child: Text('删除所选${_selected.isEmpty ? '' : '(${_selected.length})'}'),
+              ),
+          ]),
+        ),
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _items.isEmpty
+                  ? Center(
+                      child: Text('本书还没有生成过插图',
+                          style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)))
+                  : GridView.builder(
+                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 3,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                        childAspectRatio: 0.75,
+                      ),
+                      itemCount: _items.length,
+                      itemBuilder: (context, i) {
+                        final it = _items[i];
+                        final sel = _selected.contains(it.path);
+                        return InkWell(
+                          onTap: () {
+                            if (_multi) {
+                              setState(() {
+                                sel ? _selected.remove(it.path) : _selected.add(it.path);
+                              });
+                            } else {
+                              widget.onJump(it.para);
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(10),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Stack(fit: StackFit.expand, children: [
+                              Image.file(
+                                File(it.path),
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => Container(
+                                  color: scheme.surfaceContainerHighest,
+                                  child: const Center(child: Icon(Icons.broken_image)),
+                                ),
+                              ),
+                              Positioned(
+                                left: 0, right: 0, bottom: 0,
+                                child: Container(
+                                  padding: const EdgeInsets.fromLTRB(6, 10, 6, 5),
+                                  decoration: const BoxDecoration(
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topCenter,
+                                      end: Alignment.bottomCenter,
+                                      colors: [Colors.transparent, Colors.black54],
+                                    ),
+                                  ),
+                                  child: Text(
+                                    '第 ${it.para + 1} 段 · ${it.current ? '当前' : '历史'}',
+                                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white),
+                                  ),
+                                ),
+                              ),
+                              if (_multi)
+                                Positioned(
+                                  top: 4, right: 4,
+                                  child: Icon(
+                                    sel ? Icons.check_circle : Icons.radio_button_unchecked,
+                                    size: 20,
+                                    color: sel ? scheme.primary : Colors.white,
+                                  ),
+                                ),
+                            ]),
+                          ),
+                        );
+                      },
+                    ),
+        ),
+      ]),
     );
   }
 }

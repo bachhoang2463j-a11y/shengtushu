@@ -6,9 +6,12 @@ import 'package:gal/gal.dart';
 import 'package:photo_view/photo_view.dart';
 
 class ImageViewerScreen extends StatelessWidget {
-  const ImageViewerScreen({super.key, required this.imagePath, required this.prompt});
+  const ImageViewerScreen({super.key, required this.imagePath, required this.prompt, this.onDelete});
   final String imagePath;
   final String prompt;
+
+  /// 传入则在顶栏显示「删除当前图」按钮（回调负责确认与关闭本页）
+  final VoidCallback? onDelete;
 
   Future<void> _saveToGallery(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
@@ -32,6 +35,25 @@ class ImageViewerScreen extends StatelessWidget {
         foregroundColor: Colors.white,
         title: const Text('插图'),
         actions: [
+          if (onDelete != null)
+            IconButton(
+              tooltip: '删除这张图',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () async {
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (c) => AlertDialog(
+                    title: const Text('删除这张图'),
+                    content: const Text('只删除当前查看的这张，其他版本保留，确定？'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+                      FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('删除')),
+                    ],
+                  ),
+                );
+                if (ok == true) onDelete!();
+              },
+            ),
           IconButton(
             tooltip: '保存到相册',
             icon: const Icon(Icons.save_alt),

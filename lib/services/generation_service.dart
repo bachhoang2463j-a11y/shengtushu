@@ -306,6 +306,8 @@ class GenerationService extends ChangeNotifier {
             .write(const IllustrationsCompanion(status: Value('running'), error: Value(''))); // 阅读器监听 DB 自动刷新占位符
         notifyListeners();
 
+        // 本地用唯一文件名保存：避免沿用 ComfyUI 端同名输出覆盖旧图文件，
+        // 否则历史版本里记录的旧路径会全部指向「最后一张」的内容
         final savePath = await ImageStore.instance.newPath(ill.bookId, 'png');
         final path = await _comfy.generate(
           baseUrl: settings.comfyUrl,
@@ -317,6 +319,7 @@ class GenerationService extends ChangeNotifier {
           batch: 1,
           autoRandomSeed: settings.autoRandomSeed,
           saveDir: savePath.substring(0, savePath.lastIndexOf(Platform.pathSeparator)),
+          saveFile: savePath,
           onProgress: (p) {
             if (p.ratio != null) task.progress = p.ratio!;
             notifyListeners();
@@ -325,8 +328,10 @@ class GenerationService extends ChangeNotifier {
 
         // 读实际尺寸回填
         int w = ill.imgWidth, h = ill.imgHeight;
+        List<int>? newBytes;
         try {
           final bytes = await File(path).readAsBytes();
+          newBytes = bytes;
           final codec = await ui.instantiateImageCodec(bytes);
           final frame = await codec.getNextFrame();
           w = frame.image.width;
@@ -335,9 +340,26 @@ class GenerationService extends ChangeNotifier {
           codec.dispose();
         } catch (_) {}
 
+        final old = ill.imagePath;
+        // 生成结果与当前图内容完全相同（如种子未变的重复输出）→ 丢弃新文件，不产生垃圾历史
+        if (newBytes != null && old != null && old.isNotEmpty) {
+          try {
+            if (_bytesEqual(await File(old).readAsBytes(), newBytes)) {
+              try {
+                await File(path).delete();
+              } catch (_) {}
+              await (db.update(db.illustrations)..where((t) => t.id.equals(task.illustrationId)))
+                  .write(const IllustrationsCompanion(status: Value('done'), error: Value('')));
+              task.status = 'done';
+              task.progress = 1;
+              notifyListeners();
+              return;
+            }
+          } catch (_) {}
+        }
+
         // 旧图不删，移入历史版本；新图成为当前展示图
         final hist = [...decodeHistory(ill.history)];
-        final old = ill.imagePath;
         if (old != null && old.isNotEmpty && old != path) hist.add(old);
         await (db.update(db.illustrations)..where((t) => t.id.equals(task.illustrationId))).write(
           IllustrationsCompanion(
@@ -442,6 +464,54 @@ class GenerationService extends ChangeNotifier {
     await (db.delete(db.illustrations)..where((t) => t.id.equals(illustrationId))).go();
     queue.removeWhere((t) => t.illustrationId == illustrationId);
     notifyListeners();
+  }
+
+  /// 批量删除指定插图的若干张图片（当前图或历史图），用于图片管理的多选删除。
+  /// 当前图被删时提升最近一张历史为当前图；没有历史则回到「待生成」。
+  Future<void> deleteIllustrationImages(Map<int, List<String>> byIll) async {
+    final db = _requireDb();
+    for (final entry in byIll.entries) {
+      final ill = await (db.select(db.illustrations)..where((t) => t.id.equals(entry.key)))
+          .getSingleOrNull();
+      if (ill == null) continue;
+      final paths = entry.value.toSet();
+      for (final p in paths) {
+        try {
+          final f = File(p);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
+      final hist = decodeHistory(ill.history)..removeWhere(paths.contains);
+      if (ill.imagePath != null && paths.contains(ill.imagePath)) {
+        if (hist.isNotEmpty) {
+          final last = hist.removeLast();
+          await (db.update(db.illustrations)..where((t) => t.id.equals(entry.key))).write(
+            IllustrationsCompanion(imagePath: Value(last), history: Value(encodeHistory(hist))),
+          );
+        } else {
+          await (db.update(db.illustrations)..where((t) => t.id.equals(entry.key))).write(
+            const IllustrationsCompanion(
+              imagePath: Value(null),
+              status: Value('pending'),
+              history: Value('[]'),
+              error: Value(''),
+            ),
+          );
+        }
+      } else {
+        await (db.update(db.illustrations)..where((t) => t.id.equals(entry.key)))
+            .write(IllustrationsCompanion(history: Value(encodeHistory(hist))));
+      }
+    }
+    notifyListeners();
+  }
+
+  static bool _bytesEqual(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   void _ensureQueued(int illustrationId, {String? promptPreview}) {

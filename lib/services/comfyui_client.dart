@@ -183,6 +183,8 @@ class ComfyUIClient {
 
   /// 提交 → 监听进度 → 完成后取历史 → 下载图片，返回本地保存路径。
   /// [onProgress] 每个事件回调（进度/阶段提示）。
+  /// [saveFile]：完整的本地保存路径（含文件名）。传入时用它保存，避免沿用
+  /// ComfyUI 端输出文件名导致同名覆盖、旧图路径指向新内容（历史版本错乱）。
   Future<String> generate({
     required String baseUrl,
     required Map<String, dynamic> workflow,
@@ -190,6 +192,7 @@ class ComfyUIClient {
     required String positive,
     String? negative,
     required String saveDir,
+    String? saveFile,
     int? width,
     int? height,
     int? batch,
@@ -219,7 +222,7 @@ class ComfyUIClient {
       await _pollHistory(base, promptId);
       history = await _getHistory(base, promptId);
     }
-    final paths = await _downloadImages(base, history, saveDir);
+    final paths = await _downloadImages(base, history, saveDir, saveFile);
     debugPrint('[ComfyUI] 图片已保存: $paths');
     return paths;
   }
@@ -364,10 +367,15 @@ class ComfyUIClient {
     return entry;
   }
 
-  Future<String> _downloadImages(String base, Map<String, dynamic> history, String saveDir) async {
+  Future<String> _downloadImages(
+      String base, Map<String, dynamic> history, String saveDir, String? saveFile) async {
     final outputs = history['outputs'];
     if (outputs is! Map<String, dynamic>) {
       throw const ComfyUIException('历史记录无输出节点');
+    }
+    if (saveFile == null) {
+      final dir = Directory(saveDir);
+      if (!await dir.exists()) await dir.create(recursive: true);
     }
     String? saved;
     for (final nodeOutput in outputs.values) {
@@ -383,9 +391,7 @@ class ComfyUIClient {
         if (r.statusCode != 200) {
           throw ComfyUIException('下载图片 $filename 失败 HTTP ${r.statusCode}');
         }
-        final dir = Directory(saveDir);
-        if (!await dir.exists()) await dir.create(recursive: true);
-        final path = '${dir.path}${Platform.pathSeparator}$filename';
+        final path = saveFile ?? '${Directory(saveDir).path}${Platform.pathSeparator}$filename';
         await File(path).writeAsBytes(r.bodyBytes);
         saved = path; // 多张时取最后一张
       }
