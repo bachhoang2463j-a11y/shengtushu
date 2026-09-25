@@ -56,27 +56,43 @@ class TplMessage {
 
 /// 朗读（TTS）配置：引擎 + 各家凭证/音色（请求格式移植自 Conversation_avatar 项目）
 class TtsMimoConfig {
+  /// voice 哨兵值：表示用上传的参考音频复刻音色（model 自动切 voiceclone）
+  static const cloneVoiceId = '__clone__';
+
   String apiKey;
   String baseUrl;
   String model;
   String format; // wav | mp3
   String voice;
+  String cloneAudioPath; // 参考音频在应用文档目录内的绝对路径（'' = 未上传）
+  String cloneAudioName; // 原始文件名，展示用
   TtsMimoConfig({
     this.apiKey = '',
     this.baseUrl = 'https://api.xiaomimimo.com/v1',
     this.model = 'mimo-v2.5-tts',
     this.format = 'wav',
     this.voice = 'mimo_default',
+    this.cloneAudioPath = '',
+    this.cloneAudioName = '',
   });
 
-  Map<String, dynamic> toJson() =>
-      {'apiKey': apiKey, 'baseUrl': baseUrl, 'model': model, 'format': format, 'voice': voice};
+  Map<String, dynamic> toJson() => {
+        'apiKey': apiKey,
+        'baseUrl': baseUrl,
+        'model': model,
+        'format': format,
+        'voice': voice,
+        'cloneAudioPath': cloneAudioPath,
+        'cloneAudioName': cloneAudioName,
+      };
   factory TtsMimoConfig.fromJson(Map<String, dynamic> j) => TtsMimoConfig(
     apiKey: j['apiKey'] ?? '',
     baseUrl: j['baseUrl'] ?? 'https://api.xiaomimimo.com/v1',
     model: j['model'] ?? 'mimo-v2.5-tts',
     format: j['format'] ?? 'wav',
     voice: j['voice'] ?? 'mimo_default',
+    cloneAudioPath: j['cloneAudioPath'] ?? '',
+    cloneAudioName: j['cloneAudioName'] ?? '',
   );
 }
 

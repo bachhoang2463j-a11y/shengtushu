@@ -1,9 +1,11 @@
 // 设置页：阅读偏好 / LLM / ComfyUI / 生成参数 / 工作流 / 模板 / 人物预设 / 章节正则
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:drift/drift.dart' show Value;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../data/database.dart';
 import '../services/comfyui_client.dart';
@@ -209,6 +211,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 },
               ),
             ),
+            SettingRow(
+              title: '克隆参考音频',
+              subtitle: _s.tts.mimo.cloneAudioName.isEmpty
+                  ? '未上传 · 点按选一段 wav/mp3 音频样本复刻音色'
+                  : _s.tts.mimo.cloneAudioName,
+              onTap: _pickCloneAudio,
+            ),
           ] else ...[
             SettingRow(
               title: '豆包 App ID',
@@ -344,6 +353,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final cfg = _s.tts;
     final presets = cfg.engine == 'mimo' ? kMimoTtsVoices : kDoubaoTtsVoices;
     final voice = cfg.engine == 'mimo' ? cfg.mimo.voice : cfg.doubao.voice;
+    if (voice == TtsMimoConfig.cloneVoiceId) {
+      final name = cfg.mimo.cloneAudioName;
+      return name.isEmpty ? '克隆音色（未上传参考音频）' : '克隆音色（$name）';
+    }
     if (voice.isEmpty) return '未选择';
     for (final (id, name) in presets) {
       if (id == voice) return '$name（$id）';
@@ -360,6 +373,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (c) => SimpleDialog(
         title: Text(isMimo ? 'MiMo 音色' : '豆包音色'),
         children: [
+          if (isMimo)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(c, TtsMimoConfig.cloneVoiceId),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('🎙 克隆音色（复刻参考音频）'),
+                Text(
+                  cfg.mimo.cloneAudioName.isEmpty ? '未上传参考音频，选择后需上传' : '参考音频：${cfg.mimo.cloneAudioName}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+              ]),
+            ),
           for (final (id, name) in presets)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(c, id),
@@ -378,7 +402,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (picked == null) return;
     var voice = picked;
-    if (voice.isEmpty) {
+    if (voice == TtsMimoConfig.cloneVoiceId) {
+      // 克隆音色：还没传过参考音频就先引导上传，取消上传则不切换
+      if (cfg.mimo.cloneAudioPath.isEmpty && !await _pickCloneAudio()) return;
+    } else if (voice.isEmpty) {
       if (!mounted) return;
       final custom = await textInputDialog(
           context, title: '自定义音色 ID', initial: isMimo ? cfg.mimo.voice : cfg.doubao.voice);
@@ -392,6 +419,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await _s.setTts(_s.tts..doubao.voice = voice);
     }
     if (mounted) setState(() {});
+  }
+
+  /// 选择 MiMo 克隆参考音频：复制到应用文档目录统一管理，配置只存路径
+  Future<bool> _pickCloneAudio() async {
+    final files = await FilePicker.pickFiles(type: FileType.audio);
+    if (files.isEmpty || files.first.path == null) return false;
+    final name = files.first.name;
+    final ext = name.contains('.') ? '.${name.split('.').last.toLowerCase()}' : '';
+    final docs = await getApplicationDocumentsDirectory();
+    final dest = File('${docs.path}/tts_clone_ref$ext');
+    final oldPath = _s.tts.mimo.cloneAudioPath;
+    try {
+      await dest.delete(); // 同名旧文件直接覆盖
+    } catch (_) {}
+    await File(files.first.path!).copy(dest.path);
+    if (oldPath.isNotEmpty && oldPath != dest.path) {
+      try {
+        await File(oldPath).delete(); // 换了扩展名时清掉旧文件
+      } catch (_) {}
+    }
+    await _s.setTts(
+        _s.tts..mimo.cloneAudioPath = dest.path..mimo.cloneAudioName = name);
+    if (mounted) setState(() {});
+    return true;
   }
 
   Future<void> _previewTts() async {

@@ -104,8 +104,13 @@ class TtsService extends ChangeNotifier {
         ? 'https://api.xiaomimimo.com/v1'
         : cfg.baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
     final format = cfg.format == 'mp3' ? 'mp3' : 'wav';
-    final voice = cfg.voice.trim().isEmpty ? 'mimo_default' : cfg.voice.trim();
-    final model = cfg.model.trim().isEmpty ? 'mimo-v2.5-tts' : cfg.model.trim();
+    var voice = cfg.voice.trim().isEmpty ? 'mimo_default' : cfg.voice.trim();
+    var model = cfg.model.trim().isEmpty ? 'mimo-v2.5-tts' : cfg.model.trim();
+    if (voice == TtsMimoConfig.cloneVoiceId) {
+      // 音色复刻：voice 传参考音频 data URL，换专用克隆模型（同一 endpoint，响应结构不变）
+      voice = await _cloneVoiceDataUrl(cfg);
+      model = 'mimo-v2.5-tts-voiceclone';
+    }
     final body = jsonEncode({
       'model': model,
       'messages': [
@@ -152,6 +157,27 @@ class TtsService extends ChangeNotifier {
       throw TtsException(msg == null || '$msg'.isEmpty ? 'MiMo 未返回音频数据' : 'MiMo：$msg');
     }
     return base64Decode(b64);
+  }
+
+  /// 克隆音色：读参考音频文件编码为 data URL（mimo-v2.5-tts-voiceclone 的 voice 参数）
+  Future<String> _cloneVoiceDataUrl(TtsMimoConfig cfg) async {
+    if (cfg.cloneAudioPath.isEmpty) {
+      throw const TtsException('克隆音色未上传参考音频：设置 → 朗读音色 → 克隆参考音频');
+    }
+    final f = File(cfg.cloneAudioPath);
+    if (!await f.exists()) {
+      throw const TtsException('克隆参考音频文件已不存在，请到设置重新上传');
+    }
+    final ext = cfg.cloneAudioPath.split('.').last.toLowerCase();
+    const mimes = {
+      'wav': 'audio/wav',
+      'mp3': 'audio/mpeg',
+      'm4a': 'audio/mp4',
+      'ogg': 'audio/ogg',
+      'flac': 'audio/flac',
+    };
+    final mime = mimes[ext] ?? 'audio/wav';
+    return 'data:$mime;base64,${base64Encode(await f.readAsBytes())}';
   }
 
   // ---------- 豆包（火山引擎）：POST unidirectional，NDJSON 逐行 data base64 分片 ----------

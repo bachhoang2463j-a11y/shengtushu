@@ -256,15 +256,28 @@ void main() {
     expect(gestureFinder, findsOneWidget);
     final bounds = tester.getRect(gestureFinder);
 
-    // 左 10% 点按 → 切到更旧的历史图
-    await tester.tapAt(bounds.centerLeft + Offset(bounds.width * 0.1, 0));
+    // 左侧下半（更旧）点按 → 切到历史图，计数徽标短暂显示 1/2
+    await tester.tapAt(bounds.centerLeft + Offset(bounds.width * 0.1, bounds.height * 0.25));
     await tester.pump();
-    expect((imageOf().image as FileImage).file.path, paths[0], reason: '左点应显示历史图');
+    expect((imageOf().image as FileImage).file.path, paths[0], reason: '左下点应显示历史图');
+    expect(find.text('1/2'), findsOneWidget, reason: '切换后应短暂显示历史计数徽标');
 
-    // 右 10% 点按 → 切回最新
-    await tester.tapAt(bounds.centerRight - Offset(bounds.width * 0.1, 0));
+    // 左侧上半（更新）点按 → 切回最新，徽标变 2/2
+    await tester.tapAt(bounds.centerLeft + Offset(bounds.width * 0.1, -bounds.height * 0.25));
     await tester.pump();
-    expect((imageOf().image as FileImage).file.path, paths[1], reason: '右点应切回最新图');
+    expect((imageOf().image as FileImage).file.path, paths[1], reason: '左上点应切回最新图');
+    expect(find.text('2/2'), findsOneWidget);
+
+    // 徽标 1.5s 后自动淡出（widget 常驻树中，断言透明度目标归 0）
+    await tester.pump(const Duration(seconds: 2));
+    expect(
+        tester
+            .widget<AnimatedOpacity>(find
+                .ancestor(of: find.text('2/2'), matching: find.byType(AnimatedOpacity))
+                .first)
+            .opacity,
+        0,
+        reason: '徽标应在 1.5s 后自动消失');
 
     // 中间点按 → 打开大图查看器
     await tester.tap(find.byKey(const ValueKey('ill-gesture-1')));
@@ -291,16 +304,17 @@ void main() {
       await tester.pump();
       if (find.byType(Image).evaluate().isNotEmpty) break;
     }
-    final regen1 = find.byKey(const ValueKey('ill-regen1-1'));
-    final regen2 = find.byKey(const ValueKey('ill-regen2-1'));
-    expect(regen1, findsOneWidget, reason: '右上角应有 ↻1 按钮');
-    expect(regen2, findsOneWidget, reason: '右下角应有 ↻2 按钮');
+    final gestureFinder = find.byKey(const ValueKey('ill-gesture-1'));
+    expect(gestureFinder, findsOneWidget);
+    final bounds = tester.getRect(gestureFinder);
+    // 右侧竖带热区：上半=第一工作流重生，下半=第二工作流重生
+    Future<void> tapRightZone(bool top) => tester.tapAt(Offset(
+        bounds.right - bounds.width * 0.1,
+        bounds.center.dy + (top ? -1 : 1) * bounds.height * 0.25));
     var bodiesBefore = mock.rawPromptBodies.length;
 
-    // 未设置第二工作流：点 ↻2 → 只弹提示，不产生生成请求（短测试屏里先滚到按钮可见）
-    await tester.ensureVisible(regen2);
-    await tester.pump();
-    await tester.tap(regen2);
+    // 未设置第二工作流：点右下半 → 只弹提示，不产生生成请求
+    await tapRightZone(false);
     await binding.runAsync(() async => Future<void>.delayed(const Duration(milliseconds: 300)));
     await tester.pumpAndSettle();
     expect(find.textContaining('未设置第二工作流'), findsOneWidget);
@@ -315,25 +329,21 @@ void main() {
       isActive: const Value(false),
       isSecond: const Value(true),
     ));
-    await tester.ensureVisible(regen2);
-    await tester.pump();
-    await tester.tap(regen2);
+    await tapRightZone(false);
     await waitUntilIdle();
     await tester.pump();
-    expect(mock.rawPromptBodies.length, bodiesBefore + 1, reason: '↻2 应提交一次生成');
-    expect(mock.rawPromptBodies.last, contains('_e2e_marker'), reason: '↻2 必须用第二工作流提交');
+    expect(mock.rawPromptBodies.length, bodiesBefore + 1, reason: '右下半应提交一次生成');
+    expect(mock.rawPromptBodies.last, contains('_e2e_marker'), reason: '第二工作流必须被使用提交');
     final ill = await (db.select(db.illustrations)..where((t) => t.id.equals(1))).getSingle();
-    expect(GenerationService.decodeHistory(ill.history), hasLength(1), reason: '↻2 生成后旧图进历史');
+    expect(GenerationService.decodeHistory(ill.history), hasLength(1), reason: '生成后旧图进历史');
 
-    // 点 ↻1 → 仍用第一工作流（无 marker）
+    // 右上半 → 仍用第一工作流（无 marker）
     bodiesBefore = mock.rawPromptBodies.length;
-    await tester.ensureVisible(regen1);
-    await tester.pump();
-    await tester.tap(regen1);
+    await tapRightZone(true);
     await waitUntilIdle();
     await tester.pump();
     expect(mock.rawPromptBodies.length, bodiesBefore + 1);
-    expect(mock.rawPromptBodies.last, isNot(contains('_e2e_marker')), reason: '↻1 必须用第一工作流提交');
+    expect(mock.rawPromptBodies.last, isNot(contains('_e2e_marker')), reason: '第一工作流必须被使用提交');
   });
 
   test('多选删除：删历史图与当前图，当前图被删时提升最近历史', () async {    final gen = GenerationService.instance;

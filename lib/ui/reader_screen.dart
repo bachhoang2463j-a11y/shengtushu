@@ -65,6 +65,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   // 插图历史回看偏移：0 = 最新一张，1 = 上一张（更旧），仅阅读会话内有效
   final Map<int, int> _histOffset = {};
+  // 历史计数徽标：切换历史版本时短暂显示「N/M」，之后自动消失
+  int? _histBadgeId;
+  Timer? _histBadgeTimer;
 
   // 沉浸式交互状态
   bool _overlayVisible = false;
@@ -86,6 +89,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void dispose() {
     _clockTimer?.cancel();
+    _histBadgeTimer?.cancel();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _pageCtrl?.dispose();
     _scrollCtrl?.dispose();
@@ -1092,39 +1096,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  /// 插图历史切换：dir=+1 向更旧（左侧），dir=-1 向更新（右侧）；
-  /// 已是最新还向右 → 触发重新生图（旧图自动进历史）；已是最旧还向左 → 无反应
+  /// 插图历史切换：dir=+1 向更旧（左下），dir=-1 向更新（左上）；
+  /// 已到边界则无反应（重新生成走右侧热区），切换成功后短暂显示计数徽标
   void _stepImage(int illustrationId, int total, int dir) {
     final next = (_histOffset[illustrationId] ?? 0) + dir;
-    if (next < 0) {
-      _gen.regenerate(illustrationId);
-      return;
-    }
-    if (next > total - 1) return;
-    setState(() => _histOffset[illustrationId] = next);
+    if (next < 0 || next > total - 1) return;
+    setState(() {
+      _histOffset[illustrationId] = next;
+      _histBadgeId = illustrationId;
+    });
+    _histBadgeTimer?.cancel();
+    _histBadgeTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted) setState(() => _histBadgeId = null);
+    });
   }
 
-  /// 图片右上/右下角的快速重生成分流按钮：↻1 = 第一工作流，↻2 = 第二工作流
-  Widget _regenButton(int illustrationId, int slot) {
-    return GestureDetector(
-      key: ValueKey('ill-regen$slot-$illustrationId'),
-      onTap: () => _regenWithSlot(illustrationId, slot),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.refresh, size: 12, color: Colors.white),
-          const SizedBox(width: 2),
-          Text('$slot',
-              style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)),
-        ]),
-      ),
-    );
-  }
-
+  /// 右侧热区快速重生成分流：slot 1 = 第一工作流（右上半），slot 2 = 第二工作流（右下半）
   Future<void> _regenWithSlot(int illustrationId, int slot) async {
     if (slot == 2) {
       final rows =
@@ -1137,7 +1124,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
         return;
       }
     }
+    if ((_histOffset[illustrationId] ?? 0) != 0) {
+      setState(() => _histOffset[illustrationId] = 0); // 从旧版本直接重生：回到最新视图等新图
+    }
     await _gen.regenerate(illustrationId, useSecond: slot == 2);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已用第${slot == 2 ? '二' : '一'}工作流重新生成')));
+    }
   }
 
   Widget _renderImage(ImageBlock b, double fullWidth) {
@@ -1173,10 +1167,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
           behavior: HitTestBehavior.opaque,
           onTapUp: (d) {
             final frac = d.localPosition.dx / fullWidth;
+            final topHalf = d.localPosition.dy < h / 2;
             if (frac < 0.2) {
-              _stepImage(b.illustrationId, histTotal, 1); // 左侧：上一张（更旧）
+              // 左侧竖带：上半切到更新一版，下半切到更旧一版
+              _stepImage(b.illustrationId, histTotal, topHalf ? -1 : 1);
             } else if (frac >= 0.8) {
-              _stepImage(b.illustrationId, histTotal, -1); // 右侧：下一张，已最新则触发重新生图
+              // 右侧竖带：上半用第一工作流重生，下半用第二工作流重生
+              _regenWithSlot(b.illustrationId, topHalf ? 1 : 2);
             } else {
               Navigator.push(context, MaterialPageRoute(
                   builder: (_) => ImageViewerScreen(
@@ -1264,29 +1261,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
           clipBehavior: Clip.antiAlias,
           child: child,
         ),
+        // 历史计数徽标：切换历史版本后短暂显示，随后自动淡出
         Positioned(
           left: 14, bottom: 14,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.55),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.auto_awesome, size: 10, color: Colors.white),
-              const SizedBox(width: 3),
-              Text(
-                '第 ${b.paragraphIndex + 1} 段${histTotal > 1 ? ' · ${histTotal - histOffset}/$histTotal' : ''}',
-                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white),
+          child: IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: (_histBadgeId == b.illustrationId && histTotal > 1) ? 1 : 0,
+              duration: const Duration(milliseconds: 250),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '${histTotal - histOffset}/$histTotal',
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white),
+                ),
               ),
-            ]),
+            ),
           ),
         ),
-        // 快速重生成分流：↻1 = 第一工作流（默认），↻2 = 第二工作流（模型对比）
-        if (status == 'done' && (shown ?? '').isNotEmpty) ...[
-          Positioned(top: 10, right: 10, child: _regenButton(b.illustrationId, 1)),
-          Positioned(bottom: 10, right: 10, child: _regenButton(b.illustrationId, 2)),
-        ],
       ]),
     );
   }
