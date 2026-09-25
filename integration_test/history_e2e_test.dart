@@ -106,6 +106,7 @@ void main() {
   late Book book;
   late Chapter chapter;
   Map<String, Object>? savedPrefs;
+  String? savedPageMode;
 
   Future<void> waitUntilIdle({int timeoutSec = 30}) async {
     final gen = GenerationService.instance;
@@ -127,6 +128,7 @@ void main() {
       'llm': SettingsService.instance.llm.toJson(),
       'comfyUrl': SettingsService.instance.comfyUrl,
     };
+    savedPageMode = SettingsService.instance.pageMode;
     final llm = SettingsService.instance.llm..baseUrl = '${mock.base}/v1';
     await SettingsService.instance.setLlm(llm);
     await SettingsService.instance.setComfyUrl(mock.base);
@@ -138,6 +140,7 @@ void main() {
       final llm = LlmConfig.fromJson(savedPrefs!['llm'] as Map<String, dynamic>);
       await SettingsService.instance.setLlm(llm);
       await SettingsService.instance.setComfyUrl(savedPrefs!['comfyUrl'] as String);
+      await SettingsService.instance.setPageMode(savedPageMode!);
     }
     await mock.stop();
     await db.close();
@@ -231,6 +234,8 @@ void main() {
     expect(hist, hasLength(1));
     final paths = [...hist, ill.imagePath!];
 
+    // 固定滚动模式：page 模式下测试表面首屏恰好无插图，无法断言
+    await SettingsService.instance.setPageMode('scroll');
     await tester.pumpWidget(MaterialApp(home: ReaderScreen(db: db, bookId: book.id)));
     Image imageOf() => tester.widget<Image>(find.byType(Image).first);
     // 等流式排版与图片 widget 出现

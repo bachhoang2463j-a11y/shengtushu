@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:drift/drift.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter/foundation.dart';
 
 import '../data/database.dart';
@@ -309,7 +310,7 @@ class GenerationService extends ChangeNotifier {
         // 本地用唯一文件名保存：避免沿用 ComfyUI 端同名输出覆盖旧图文件，
         // 否则历史版本里记录的旧路径会全部指向「最后一张」的内容
         final savePath = await ImageStore.instance.newPath(ill.bookId, 'png');
-        final path = await _comfy.generate(
+        var path = await _comfy.generate(
           baseUrl: settings.comfyUrl,
           workflow: workflowJson,
           mapping: mapping,
@@ -326,16 +327,32 @@ class GenerationService extends ChangeNotifier {
           },
         );
 
-        // 读实际尺寸回填
+        // 读实际尺寸回填，并转码为 WebP（q90 视觉无损，体积约为 PNG 的 1/5）
         int w = ill.imgWidth, h = ill.imgHeight;
         try {
-          final bytes = await File(path).readAsBytes();
-          final codec = await ui.instantiateImageCodec(bytes);
+          final raw = await File(path).readAsBytes();
+          final codec = await ui.instantiateImageCodec(raw);
           final frame = await codec.getNextFrame();
           w = frame.image.width;
           h = frame.image.height;
           frame.image.dispose();
           codec.dispose();
+          final webp = await FlutterImageCompress.compressWithList(
+            raw,
+            quality: 90,
+            format: CompressFormat.webp,
+            minWidth: w,
+            minHeight: h,
+          );
+          if (webp.isNotEmpty && webp.length < raw.length) {
+            final webpPath = await ImageStore.instance.newPath(ill.bookId, 'webp');
+            await File(webpPath).writeAsBytes(webp);
+            try {
+              await File(path).delete();
+            } catch (_) {}
+            path = webpPath;
+            debugPrint('[生图] 已转码 WebP：${raw.length ~/ 1024}KB → ${webp.length ~/ 1024}KB');
+          }
         } catch (_) {}
 
         // 旧图不删，移入历史版本；新图成为当前展示图（每次生成必记录一张）
@@ -485,6 +502,78 @@ class GenerationService extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  /// 压缩一本书全部插图中的 PNG 为 WebP（当前图与历史版本一起处理）。
+  /// 返回节省的总字节数；单张失败自动跳过保留原样。
+  Future<int> compressBookImages(int bookId) async {
+    final db = _requireDb();
+    final rows = await (db.select(db.illustrations)..where((t) => t.bookId.equals(bookId))).get();
+    var saved = 0;
+    for (final ill in rows) {
+      final hist = decodeHistory(ill.history);
+      final newHist = <String>[];
+      var changed = false;
+      for (final p in hist) {
+        final r = await _compressOnePng(p);
+        if (r != null) {
+          newHist.add(r.$1);
+          saved += r.$2;
+          changed = true;
+        } else {
+          newHist.add(p);
+        }
+      }
+      String? newCur;
+      if (ill.imagePath != null && ill.imagePath!.isNotEmpty) {
+        final r = await _compressOnePng(ill.imagePath!);
+        if (r != null) {
+          newCur = r.$1;
+          saved += r.$2;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await (db.update(db.illustrations)..where((t) => t.id.equals(ill.id))).write(
+          IllustrationsCompanion(
+            imagePath: newCur == null ? const Value.absent() : Value(newCur),
+            history: Value(encodeHistory(newHist)),
+          ),
+        );
+      }
+    }
+    notifyListeners();
+    return saved;
+  }
+
+  /// 单张 PNG → WebP；成功返回 (新路径, 节省字节)，失败/不划算返回 null
+  Future<(String, int)?> _compressOnePng(String p) async {
+    if (!p.toLowerCase().endsWith('.png')) return null;
+    try {
+      final f = File(p);
+      if (!await f.exists()) return null;
+      final raw = await f.readAsBytes();
+      final codec = await ui.instantiateImageCodec(raw);
+      final frame = await codec.getNextFrame();
+      final w = frame.image.width;
+      final h = frame.image.height;
+      frame.image.dispose();
+      codec.dispose();
+      final webp = await FlutterImageCompress.compressWithList(
+        raw,
+        quality: 90,
+        format: CompressFormat.webp,
+        minWidth: w,
+        minHeight: h,
+      );
+      if (webp.isEmpty || webp.length >= raw.length) return null;
+      final np = '${p.substring(0, p.lastIndexOf('.'))}.webp';
+      await File(np).writeAsBytes(webp);
+      await f.delete();
+      return (np, raw.length - webp.length);
+    } catch (_) {
+      return null;
+    }
   }
 
   void _ensureQueued(int illustrationId, {String? promptPreview}) {

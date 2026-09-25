@@ -199,7 +199,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
     // 连续滚动模式的数据：整段流 + 与渲染规则一致的测高累计偏移
     final items = _buildItems(paras, ills);
-    final heights = Paginator.estimateFlowHeights(items, config, maxImageH: size.height);
+    final heights = Paginator.estimateFlowHeights(items, config, maxImageH: size.height - 12);
     final offsets = Paginator.cumulativeOffsets(heights);
     for (var i = 0; i < offsets.length; i++) {
       offsets[i] += _padV; // ListView 顶部 padding
@@ -774,6 +774,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           _viewHistoryImage(it.illId, it.path);
           _jumpToParagraph(it.para);
         },
+        onCompress: () => _gen.compressBookImages(widget.bookId),
         onDelete: _gen.deleteIllustrationImages,
       ),
     );
@@ -1078,7 +1079,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final imagePath = live?.imagePath ?? b.imagePath;
     final error = live?.error ?? b.error;
     final prompt = live?.prompt ?? b.prompt;
-    final h = (fullWidth / b.aspect.clamp(0.2, 5.0)).clamp(60.0, _pageHeight);
+    final h = (fullWidth / b.aspect.clamp(0.2, 5.0)).clamp(60.0, _pageHeight - 12);
     // 多版本：history（旧→新）+ 当前图；offset 0 = 最新一张。
     // DB 实时值优先（原始 JSON 需解码），排版缓存里已是解码后的列表。
     final List<String> hist;
@@ -1435,12 +1436,14 @@ class _ImageManagerSheet extends StatefulWidget {
     required this.db,
     required this.bookId,
     required this.onOpen,
+    required this.onCompress,
     required this.onDelete,
   });
 
   final AppDatabase db;
   final int bookId;
   final void Function(({int illId, int para, String path, bool current})) onOpen;
+  final Future<int> Function() onCompress;
   final Future<void> Function(Map<int, List<String>> targets) onDelete;
 
   @override
@@ -1520,6 +1523,18 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
             Text('图片管理 · ${_items.length} 张',
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: scheme.onSurface)),
             const Spacer(),
+            TextButton(
+              onPressed: () async {
+                final messenger = ScaffoldMessenger.of(context);
+                final kb = await widget.onCompress();
+                await _load();
+                messenger.showSnackBar(SnackBar(
+                    content: Text(kb > 0
+                        ? '已压缩存量 PNG，节省 ${(kb / 1024).toStringAsFixed(1)} MB'
+                        : '没有需要压缩的 PNG 图片')));
+              },
+              child: const Text('压缩存储'),
+            ),
             TextButton(
               onPressed: () => setState(() {
                 _multi = !_multi;

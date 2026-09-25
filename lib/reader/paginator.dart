@@ -105,9 +105,10 @@ class Paginator {
 
     for (final item in items) {
       if (item is ImageItem) {
-        final h = config.width / item.block.aspect.clamp(0.2, 5.0);
-        if (used > 0 && used + h > config.height) newPage();
-        if (used + h > config.height && current.isEmpty) {
+        // 与渲染口径一致：渲染侧图片 clamp(60, 页高-12) 且带 12px 上下 margin
+        final h = (config.width / item.block.aspect.clamp(0.2, 5.0)).clamp(60.0, config.height - 12);
+        if (used > 0 && used + h + 12 > config.height) newPage();
+        if (current.isEmpty && h + 12 > config.height) {
           // 单图高于整页：缩到整页高度
           current.add(item.block);
           used = config.height;
@@ -115,7 +116,7 @@ class Paginator {
           continue;
         }
         current.add(item.block);
-        used += h + config.paragraphSpacing * 0.5;
+        used += h + 12 + config.paragraphSpacing * 0.5;
         continue;
       }
 
