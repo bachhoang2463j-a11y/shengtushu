@@ -1498,69 +1498,68 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   /// 选中文字后的浮动菜单：生图 / 朗读 / 屏蔽 / 编辑 / 复制 / 全选
-  /// （demo 胶囊样式，AdaptiveTextSelectionToolbar 负责锚定）
+  /// （demo 胶囊样式由 toolbarBuilder 提供；6 个胶囊在窄屏放不下时，
+  /// 由框架自己把末尾几个收进「⋮」溢出菜单，不会裁到屏幕外）
   Widget _selectionMenu(BuildContext context, SelectableRegionState selectableRegionState) {
     _selRegionState = selectableRegionState;
     final endpoints = selectableRegionState.selectionEndpoints;
-    return AdaptiveTextSelectionToolbar(
-      anchors: TextSelectionToolbarAnchors(
-        primaryAnchor: endpoints.last.point,
-        secondaryAnchor: endpoints.first.point,
+    return TextSelectionToolbar(
+      anchorAbove: endpoints.last.point,
+      anchorBelow: endpoints.first.point,
+      toolbarBuilder: (context, child) => Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(999),
+        clipBehavior: Clip.antiAlias,
+        color: const Color(0xFF1E293B),
+        // 溢出「⋮ / ←」按钮也用浅色图标，压在深色胶囊上
+        child: IconTheme(
+          data: const IconThemeData(color: Color(0xFFE2E8F0)),
+          child: child,
+        ),
       ),
       children: [
-        Material(
-          elevation: 6,
-          borderRadius: BorderRadius.circular(999),
-          color: const Color(0xFF1E293B),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-            // 胶囊较多，窄屏用 Wrap 自动换行，避免撑破工具栏
-            child: Wrap(children: [
-              _pillButton(
-                '生图', Icons.auto_awesome,
-                primary: true,
-                onTap: () {
-                  // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
-                  final sel = _selectionText;
-                  selectableRegionState.hideToolbar();
-                  selectableRegionState.clearSelection();
-                  _generateFromSelection(sel);
-                },
-              ),
-              _pillButton(
-                '朗读', Icons.volume_up_outlined,
-                onTap: () {
-                  // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
-                  final sel = _selectionText;
-                  selectableRegionState.hideToolbar();
-                  selectableRegionState.clearSelection();
-                  _speakSelection(sel);
-                },
-              ),
-              _pillButton(
-                '屏蔽', Icons.content_cut_outlined,
-                onTap: () {
-                  // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
-                  final sel = _selectionText;
-                  selectableRegionState.hideToolbar();
-                  selectableRegionState.clearSelection();
-                  _shieldFromSelection(sel);
-                },
-              ),
-              _pillButton('编辑', Icons.edit_outlined,
-                  onTap: () => _editSelection(selectableRegionState)),
-              _pillButton('复制', Icons.copy_outlined, onTap: () {
-                // ignore: deprecated_member_use
-                selectableRegionState.copySelection(SelectionChangedCause.toolbar);
-                selectableRegionState.hideToolbar();
-              }),
-              _pillButton('全选', Icons.select_all_outlined, onTap: () {
-                selectableRegionState.selectAll(SelectionChangedCause.toolbar);
-                selectableRegionState.hideToolbar();
-              }),
-            ]),
-          ),
+        _pillButton(
+          '生图', Icons.auto_awesome,
+          primary: true,
+          onTap: () {
+            // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
+            final sel = _selectionText;
+            selectableRegionState.hideToolbar();
+            selectableRegionState.clearSelection();
+            _generateFromSelection(sel);
+          },
         ),
+        _pillButton(
+          '朗读', Icons.volume_up_outlined,
+          onTap: () {
+            // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
+            final sel = _selectionText;
+            selectableRegionState.hideToolbar();
+            selectableRegionState.clearSelection();
+            _speakSelection(sel);
+          },
+        ),
+        _pillButton(
+          '屏蔽', Icons.content_cut_outlined,
+          onTap: () {
+            // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
+            final sel = _selectionText;
+            selectableRegionState.hideToolbar();
+            selectableRegionState.clearSelection();
+            _shieldFromSelection(sel);
+          },
+        ),
+        _pillButton('编辑', Icons.edit_outlined,
+            onTap: () => _editSelection(selectableRegionState)),
+        _pillButton('复制', Icons.copy_outlined, onTap: () {
+          // ignore: deprecated_member_use
+          selectableRegionState.copySelection(SelectionChangedCause.toolbar);
+          selectableRegionState.hideToolbar();
+        }),
+        _pillButton('全选', Icons.select_all_outlined, onTap: () {
+          selectableRegionState.selectAll(SelectionChangedCause.toolbar);
+          selectableRegionState.hideToolbar();
+        }),
       ],
     );
   }
