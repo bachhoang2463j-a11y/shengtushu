@@ -49,15 +49,20 @@ class ChapterEditor {
       ...merged,
       ...paras.sublist(endPara + 1),
     ];
-    final newContent = newParas.join('\n');
+    await rewriteContent(db, chapter.id, newParas.join('\n'));
+  }
+
+  /// 整章重写正文并重锚定插图（选区编辑、文本清洗共用同一套口径）。
+  static Future<void> rewriteContent(AppDatabase db, int chapterId, String newContent) async {
+    final newParas = newContent.split('\n');
     final newHashes = {for (var i = 0; i < newParas.length; i++) hash(newParas[i]): i};
 
     await db.transaction(() async {
-      await (db.update(db.chapters)..where((t) => t.id.equals(chapter.id)))
+      await (db.update(db.chapters)..where((t) => t.id.equals(chapterId)))
           .write(ChaptersCompanion(content: Value(newContent)));
       // 重锚定：段落文本哈希一致 → 迁移；不一致（本段被编辑）→ 夹紧到有效范围
       final ills = await (db.select(db.illustrations)
-            ..where((t) => t.chapterId.equals(chapter.id)))
+            ..where((t) => t.chapterId.equals(chapterId)))
           .get();
       for (final ill in ills) {
         var newIdx = newHashes[ill.anchorHash];

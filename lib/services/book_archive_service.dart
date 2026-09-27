@@ -244,12 +244,14 @@ class BookArchiveService {
           ..orderBy([(i) => OrderingTerm.asc(i.id)]))
         .get();
 
+    final coverRef = await _coverRef(b);
     final sink = jsonFile.openWrite(encoding: utf8);
     try {
       sink.write('{"title":${jsonEncode(b.title)}');
       sink.write(',"author":${jsonEncode(b.author)}');
       sink.write(',"format":${jsonEncode(b.format)}');
       sink.write(',"lore":${jsonEncode(b.lore)}');
+      sink.write(',"coverFile":${coverRef == null ? 'null' : jsonEncode(coverRef)}');
       sink.write(',"createdAt":${jsonEncode(b.createdAt.toIso8601String())}');
       sink.write(',"lastChapter":${b.lastChapter}');
       sink.write(',"lastParagraph":${b.lastParagraph}');
@@ -492,6 +494,16 @@ class BookArchiveService {
           }
           await imgDir.create(recursive: true);
           createdImageDirs.add(imgDir);
+
+          // 封面：复制进本书图片目录（cover_ 前缀，与「取消封面」的清理口径一致）
+          if (book.coverFile != null) {
+            final src = extracted[book.coverFile!]!;
+            final dst = File(p.join(
+                imgDir.path, 'cover_${imageBase}_${imageCount++}${p.extension(src.path)}'));
+            await src.copy(dst.path);
+            await (db.update(db.books)..where((t) => t.id.equals(newBookId)))
+                .write(BooksCompanion(coverPath: Value(dst.path)));
+          }
 
           for (final ill in book.illustrations) {
             _checkCancelled(isCancelled);
@@ -741,6 +753,14 @@ class BookArchiveService {
       ));
     }
 
+    // 封面（可选，老归档没有该字段）
+    String? coverFile;
+    final rawCover = json['coverFile'];
+    if (rawCover != null) {
+      if (rawCover is! String) throw ArchiveFormatException('book.json coverFile 不是字符串: $ctx');
+      coverFile = _requireRef(rawCover, 'books/${ref.origId}/images/', archive, referenced, ctx);
+    }
+
     referenced.add(ref.bookPath);
 
     var createdAt = DateTime.now();
@@ -757,6 +777,7 @@ class BookArchiveService {
       lastParagraph: _asInt(json['lastParagraph'], 0),
       chapters: chapters,
       illustrations: ills,
+      coverFile: coverFile,
     );
   }
 
@@ -810,13 +831,27 @@ class BookArchiveService {
     return n;
   }
 
-  /// 每本书的导出图片（当前图 + 历史，按插图 id 排序）
+  /// 封面入包的归档路径；无封面或文件缺失时返回 null（不阻断导出）
+  Future<String?> _coverRef(Book b) async {
+    if (b.coverPath.isEmpty) return null;
+    if (!await File(b.coverPath).exists()) return null;
+    return 'books/${b.id}/images/cover${_ext(b.coverPath)}';
+  }
+
+  /// 每本书的导出图片（封面 + 当前图 + 历史，按插图 id 排序）
   Future<List<_ImageRef>> _bookImages(int bookId) async {
     final ills = await (db.select(db.illustrations)
           ..where((i) => i.bookId.equals(bookId))
           ..orderBy([(i) => OrderingTerm.asc(i.id)]))
         .get();
     final result = <_ImageRef>[];
+    final book = await (db.select(db.books)..where((b) => b.id.equals(bookId))).getSingleOrNull();
+    if (book != null) {
+      final coverRef = await _coverRef(book);
+      if (coverRef != null) {
+        result.add(_ImageRef(illId: 0, sourcePath: book.coverPath, zipPath: coverRef));
+      }
+    }
     for (final ill in ills) {
       if (ill.imagePath?.isNotEmpty ?? false) {
         result.add(_ImageRef(
@@ -986,6 +1021,7 @@ class _BookData {
   final int lastParagraph;
   final List<_ChapterData> chapters;
   final List<_IllData> illustrations;
+  final String? coverFile;
   const _BookData({
     required this.title,
     required this.author,
@@ -996,6 +1032,7 @@ class _BookData {
     required this.lastParagraph,
     required this.chapters,
     required this.illustrations,
+    this.coverFile,
   });
 }
 

@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
-import 'package:drift/drift.dart' hide isNotNull;
+import 'package:drift/drift.dart' hide isNotNull, isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -165,6 +165,43 @@ void main() {
     expect(await File(history[0]).readAsBytes(), await File(origHistory[0]).readAsBytes());
     expect(await File(history[1]).readAsBytes(), await File(origHistory[1]).readAsBytes());
     expect(history[0], isNot(origHistory[0]), reason: '全新文件名');
+  });
+
+  test('封面随归档往返：复制进新书目录并回填 coverPath', () async {
+    final bookId = await seedBook();
+    final cover = File(p.join(imagesRoot.path, '$bookId', 'cover_1.png'));
+    await cover.writeAsBytes(_fakePng(9));
+    await (db.update(db.books)..where((b) => b.id.equals(bookId)))
+        .write(BooksCompanion(coverPath: Value(cover.path)));
+
+    final zip = await service.exportArchive(bookId: bookId);
+    final result = await service.importArchive(zip);
+    expect(result.imageCount, 4, reason: '封面 + 当前图 + 2 历史图');
+
+    final newBook = await (db.select(db.books)
+          ..where((b) => b.id.equals(result.bookIds.first)))
+        .getSingle();
+    expect(newBook.coverPath, isNotEmpty);
+    expect(p.basename(newBook.coverPath).startsWith('cover_'), isTrue);
+    expect(p.dirname(newBook.coverPath), p.join(imagesRoot.path, '${newBook.id}'));
+    expect(await File(newBook.coverPath).readAsBytes(), await cover.readAsBytes());
+  });
+
+  test('封面文件缺失：不入包也不阻断导出', () async {
+    final bookId = await seedBook();
+    await (db.update(db.books)..where((b) => b.id.equals(bookId)))
+        .write(BooksCompanion(coverPath: Value(p.join(imagesRoot.path, '$bookId', 'cover_gone.png'))));
+
+    final zip = await service.exportArchive(bookId: bookId);
+    final (bytes, _) = await readZipEntry(zip, 'books/$bookId/book.json');
+    final json = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    expect(json['coverFile'], isNull);
+
+    final result = await service.importArchive(zip);
+    final newBook = await (db.select(db.books)
+          ..where((b) => b.id.equals(result.bookIds.first)))
+        .getSingle();
+    expect(newBook.coverPath, '');
   });
 
   test('图片以 store（不压缩）方式入包', () async {

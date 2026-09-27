@@ -1,4 +1,6 @@
-// 书架：导入 TXT/DOCX、阅读、设定说明、导出 PDF、删除；支持系统「打开方式」导入
+// 书架：导入 TXT/DOCX、阅读、设定说明、文本清洗、导出 PDF、删除；支持系统「打开方式」导入
+import 'dart:io';
+
 import 'package:drift/drift.dart' show OrderingTerm, Value;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show compute;
@@ -15,6 +17,7 @@ import 'data_management_screen.dart';
 import 'pdf_export_screen.dart';
 import 'reader_screen.dart';
 import 'settings_screen.dart';
+import 'text_clean_screen.dart';
 
 /// 系统「打开方式」VIEW intent 通道（MainActivity 侧把 content:// 复制进缓存后给路径）
 const MethodChannel kViewIntentChannel = MethodChannel('shengtushu/view_intent');
@@ -42,8 +45,8 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
   late final Stream<Map<int, int>> _illustrationCounts;
 
   /// isolate 入口：文件解析（纯计算，不碰 UI）
-  static List<ImportedChapter> _importTask((String, String) args) {
-    return importBookFile(args.$1, chapterRegex: args.$2);
+  static List<ImportedChapter> _importTask((String, String, String) args) {
+    return importBookFile(args.$1, chapterRegex: args.$2, cleanOptionsJson: args.$3);
   }
 
   Stream<List<Book>> _watchBooks() {
@@ -112,8 +115,9 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
     if (_importing) return null;
     setState(() => _importing = true);
     try {
-      // 解析放进 isolate，避免大文件卡主线程
-      final chapters = await compute(_importTask, (path, SettingsService.instance.chapterRegex));
+      // 解析放进 isolate，避免大文件卡主线程（清洗配置随参数带入）
+      final chapters = await compute(_importTask,
+          (path, SettingsService.instance.chapterRegex, SettingsService.instance.cleanOptionsJson()));
       if (chapters.isEmpty) {
         throw const FormatException('未解析出任何内容');
       }
@@ -190,6 +194,10 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
           case 'lore':
             _editLore(book);
             break;
+          case 'clean':
+            Navigator.push(context, MaterialPageRoute(
+                builder: (_) => TextCleanScreen(db: widget.db, book: book)));
+            break;
           case 'txt':
           case 'backup':
             Navigator.push(context, MaterialPageRoute(builder: (_) => DataManagementScreen(
@@ -208,6 +216,7 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
       },
       itemBuilder: (_) => const [
         PopupMenuItem(value: 'lore', child: Text('设定说明（生图参考）')),
+        PopupMenuItem(value: 'clean', child: Text('文本清洗')),
         PopupMenuItem(value: 'txt', child: Text('导出 TXT')),
         PopupMenuItem(value: 'backup', child: Text('备份本书')),
         PopupMenuItem(value: 'pdf', child: Text('导出 PDF')),
@@ -216,9 +225,21 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
     );
   }
 
+  /// 无封面（或封面文件缺失）时的程序化渐变
+  Widget _gradientCover(List<Color> grad) => DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: grad,
+          ),
+        ),
+      );
+
   Widget _bookCard(Book book, int chapterCount, int illCount) {
     final scheme = Theme.of(context).colorScheme;
     final grad = _coverGradients[book.id % _coverGradients.length];
+    final cover = book.coverPath;
     final pct = chapterCount == 0 ? 0.0 : ((book.lastChapter + 1) / chapterCount).clamp(0.0, 1.0);
     return Material(
       color: Colors.white,
@@ -233,16 +254,27 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
           Expanded(
             child: Stack(children: [
               Positioned.fill(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: grad,
+                child: cover.isEmpty
+                    ? _gradientCover(grad)
+                    : Image.file(
+                        File(cover),
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => _gradientCover(grad),
+                      ),
+              ),
+              if (cover.isNotEmpty)
+                // 照片封面压一层底部渐深蒙层，保证书名可读
+                const Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.center,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.transparent, Colors.black54],
+                      ),
                     ),
                   ),
                 ),
-              ),
               Positioned(
                 left: 0, top: 0, bottom: 0,
                 width: 4,

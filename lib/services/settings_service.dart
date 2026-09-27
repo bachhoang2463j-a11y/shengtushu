@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'text_cleaner.dart';
+
 class LlmConfig {
   String baseUrl;
   String apiKey;
@@ -244,6 +246,44 @@ class SettingsService extends ChangeNotifier {
   // ---------- 章节正则 ----------
   String get chapterRegex => _get('chapterRegex', kDefaultChapterRegexSetting);
   Future<void> setChapterRegex(String v) => _set('chapterRegex', v);
+
+  // ---------- 文本清洗 ----------
+  bool get cleanStripNoise => _sp.getBool('cleanStripNoise') ?? true;
+  bool get cleanStripMojibake => _sp.getBool('cleanStripMojibake') ?? true;
+
+  List<CleanRule> get cleanRules {
+    final raw = _get('cleanRules', '[]');
+    try {
+      return [
+        for (final e in jsonDecode(raw) as List)
+          if (e is Map<String, dynamic>) CleanRule.fromJson(e),
+      ];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> setCleanStripNoise(bool v) async {
+    await _sp.setBool('cleanStripNoise', v);
+    notifyListeners();
+  }
+
+  Future<void> setCleanStripMojibake(bool v) async {
+    await _sp.setBool('cleanStripMojibake', v);
+    notifyListeners();
+  }
+
+  Future<void> setCleanRules(List<CleanRule> rules) =>
+      _set('cleanRules', jsonEncode([for (final r in rules) r.toJson()]));
+
+  /// 当前清洗配置（导入 isolate 传递 / 手动清理共用）
+  CleanOptions get cleanOptions => CleanOptions(
+        stripNoise: cleanStripNoise,
+        stripMojibake: cleanStripMojibake,
+        rules: cleanRules,
+      );
+
+  String cleanOptionsJson() => jsonEncode(cleanOptions.toJson());
 }
 
 const String kDefaultChapterRegexSetting = r'^\s*(第[0-9〇零一二三四五六七八九十百千万两]+[章回节卷集部篇].*)$';

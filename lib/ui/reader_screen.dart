@@ -1,4 +1,5 @@
-// 阅读器：沉浸式排版（demo 原型）/ 连续滚动 + 双翻页模式 / 选中文段生图 / 插图管理 / 进度记忆
+// 阅读器：沉浸式排版（demo 原型）/ 连续滚动 + 双翻页模式 / 选中文段生图 /
+// 选区生成屏蔽正则 / 插图管理与封面 / 进度记忆
 import 'dart:async';
 import 'dart:io';
 
@@ -10,13 +11,17 @@ import '../data/database.dart';
 import '../data/library_queries.dart';
 import '../reader/paginator.dart';
 import '../services/chapter_editor.dart';
+import '../services/clean_service.dart';
+import '../services/cover_service.dart';
 import '../services/generation_service.dart';
 import '../services/library_activity.dart';
 import '../services/quote_expander.dart';
 import '../services/settings_service.dart';
+import '../services/text_cleaner.dart';
 import '../services/tts_service.dart';
 import 'image_viewer_screen.dart';
 import 'settings_screen.dart';
+import 'shield_rule_dialog.dart';
 import 'theme_ext.dart';
 import 'widgets.dart';
 
@@ -1083,6 +1088,64 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  /// 选区 → 生成「头尾锚点」屏蔽正则 → 预览确认 → 清理本书（可选存为全局规则）。
+  /// 头/尾取选区所在的整段文本，用户从句子中间开始选也能命中。
+  Future<void> _shieldFromSelection(String sel) async {
+    final ch = _chapter;
+    final trimmed = sel.trim();
+    if (ch == null || trimmed.isEmpty) return;
+    final paras = _paragraphs;
+    final hint = _currentAnchorParagraph();
+    final (sP, _) = ChapterEditor.locateSelectionStart(paras, trimmed, hintParagraph: hint);
+    final (eP, _) = GenerationService.locateSelectionEnd(paras, trimmed, hintParagraph: hint);
+    final rule = TextCleaner.buildRuleFromSelection(
+      trimmed,
+      head: (sP >= 0 && sP < paras.length) ? paras[sP] : null,
+      tail: (eP >= 0 && eP < paras.length) ? paras[eP] : null,
+    );
+    if (!mounted) return;
+    final decision = await showShieldRuleDialog(context,
+        db: widget.db, bookId: widget.bookId, rule: rule);
+    if (decision == null || !mounted) return;
+    try {
+      await LibraryActivity.instance.write(() async {
+        await CleanService(widget.db).apply(
+          widget.bookId,
+          CleanOptions(stripNoise: false, stripMojibake: false, rules: [decision.rule]),
+        );
+        if (decision.saveRule) {
+          await _settings.setCleanRules([
+            for (final r in _settings.cleanRules)
+              if (r.name != decision.rule.name) r,
+            decision.rule,
+          ]);
+        }
+      });
+    } on LibraryBusyException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    } on StateError catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    }
+    if (!mounted) return;
+    // 章节可能被删（整章清空），按 id 重新定位当前章
+    final chapters = await LibraryQueries(widget.db).chapterIndex(widget.bookId);
+    if (!mounted) return;
+    if (chapters.isEmpty) {
+      setState(() => _loadError = '这本书没有章节');
+      return;
+    }
+    final idx = chapters.indexWhere((c) => c.id == ch.id);
+    _chapterIdx = idx >= 0 ? idx : chapters.length - 1;
+    _pendingRestoreParagraph = idx >= 0 ? null : 0;
+    setState(() => _chapters = chapters);
+    await _loadChapter();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(decision.saveRule ? '已屏蔽并保存规则' : '已屏蔽选中内容')));
+  }
+
   Future<void> _showChapterDrawer() async {
     TransitionRoute<dynamic>? drawerRoute;
     final selected = await showModalBottomSheet<int>(
@@ -1434,7 +1497,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  /// 选中文字后的浮动菜单：生图 / 朗读 / 编辑 / 复制 / 全选（demo 胶囊样式，AdaptiveTextSelectionToolbar 负责锚定）
+  /// 选中文字后的浮动菜单：生图 / 朗读 / 屏蔽 / 编辑 / 复制 / 全选
+  /// （demo 胶囊样式，AdaptiveTextSelectionToolbar 负责锚定）
   Widget _selectionMenu(BuildContext context, SelectableRegionState selectableRegionState) {
     _selRegionState = selectableRegionState;
     final endpoints = selectableRegionState.selectionEndpoints;
@@ -1450,7 +1514,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
           color: const Color(0xFF1E293B),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
+            // 胶囊较多，窄屏用 Wrap 自动换行，避免撑破工具栏
+            child: Wrap(children: [
               _pillButton(
                 '生图', Icons.auto_awesome,
                 primary: true,
@@ -1470,6 +1535,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   selectableRegionState.hideToolbar();
                   selectableRegionState.clearSelection();
                   _speakSelection(sel);
+                },
+              ),
+              _pillButton(
+                '屏蔽', Icons.content_cut_outlined,
+                onTap: () {
+                  // 先捕获选区文本，再清除（清除会同步触发 onSelectionChanged(null)）
+                  final sel = _selectionText;
+                  selectableRegionState.hideToolbar();
+                  selectableRegionState.clearSelection();
+                  _shieldFromSelection(sel);
                 },
               ),
               _pillButton('编辑', Icons.edit_outlined,
@@ -1651,7 +1726,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 }
 
 /// 图片管理面板：显示本书生成的所有图片（含历史版本），
-/// 点按跳转到对应段落；多选删除以清理体积。
+/// 点按跳转到对应段落；长按设为封面；多选删除以清理体积。
 class _ImageManagerSheet extends StatefulWidget {
   const _ImageManagerSheet({
     required this.db,
@@ -1676,6 +1751,7 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
   final Set<String> _selected = {};
   bool _multi = false;
   bool _loading = true;
+  String _coverPath = '';
 
   @override
   void initState() {
@@ -1688,6 +1764,7 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
           ..where((t) => t.bookId.equals(widget.bookId))
           ..orderBy([(t) => OrderingTerm.asc(t.afterParagraph)]))
         .get();
+    final cover = await CoverService(widget.db).coverOf(widget.bookId);
     final items = <({int illId, int para, String path, bool current})>[];
     for (final ill in rows) {
       for (final h in GenerationService.decodeHistory(ill.history)) {
@@ -1701,9 +1778,68 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
     if (mounted) {
       setState(() {
         _items = items;
+        _coverPath = cover;
         _loading = false;
       });
     }
+  }
+
+  /// 长按缩略图：设为封面 / 查看大图
+  Future<void> _showTileMenu(({int illId, int para, String path, bool current}) it) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.bookmark_add_outlined),
+            title: const Text('设为封面'),
+            onTap: () => Navigator.pop(c, 'set'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.zoom_out_map),
+            title: const Text('查看大图'),
+            onTap: () => Navigator.pop(c, 'open'),
+          ),
+        ]),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'open') {
+      widget.onOpen(it);
+      return;
+    }
+    await _setCover(it.path);
+  }
+
+  /// 封面用复制件（源图之后被压缩/删除/重生都不影响封面），
+  /// 所以这里不删源图、也不改插图记录。
+  Future<void> _setCover(String srcPath) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await LibraryActivity.instance.write(
+          () => CoverService(widget.db).setCover(widget.bookId, srcPath));
+    } on LibraryBusyException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('设置封面失败：$e')));
+      return;
+    }
+    await _load();
+    messenger.showSnackBar(const SnackBar(content: Text('已设为本书封面')));
+  }
+
+  Future<void> _clearCover() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await LibraryActivity.instance.write(
+          () => CoverService(widget.db).clearCover(widget.bookId));
+    } on LibraryBusyException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    }
+    await _load();
+    messenger.showSnackBar(const SnackBar(content: Text('已取消封面')));
   }
 
   Future<void> _deleteSelected() async {
@@ -1771,6 +1907,34 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
               ),
           ]),
         ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
+          child: Row(children: [
+            if (_coverPath.isEmpty)
+              Icon(Icons.bookmark_border, size: 16, color: scheme.onSurfaceVariant)
+            else
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: Image.file(File(_coverPath),
+                    width: 26, height: 34, fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) =>
+                        Icon(Icons.broken_image, size: 16, color: scheme.onSurfaceVariant)),
+              ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _coverPath.isEmpty ? '未设封面 · 长按下方图片可设为封面' : '当前封面 · 长按下方图片可更换',
+                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+              ),
+            ),
+            if (_coverPath.isNotEmpty)
+              TextButton(
+                onPressed: _clearCover,
+                style: TextButton.styleFrom(foregroundColor: scheme.error),
+                child: const Text('取消封面'),
+              ),
+          ]),
+        ),
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator())
@@ -1791,6 +1955,7 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
                         final it = _items[i];
                         final sel = _selected.contains(it.path);
                         return InkWell(
+                          onLongPress: () => _showTileMenu(it),
                           onTap: () {
                             if (_multi) {
                               setState(() {

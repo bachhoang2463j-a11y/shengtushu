@@ -1,4 +1,4 @@
-// 设置页：阅读偏好 / LLM / ComfyUI / 生成参数 / 工作流 / 模板 / 人物预设 / 章节正则
+// 设置页：阅读偏好 / 文本清洗 / LLM / ComfyUI / 生成参数 / 工作流 / 模板 / 人物预设 / 章节正则
 import 'dart:convert';
 import 'dart:io';
 
@@ -11,6 +11,7 @@ import '../data/database.dart';
 import '../services/comfyui_client.dart';
 import '../services/default_workflow.dart';
 import '../services/settings_service.dart';
+import '../services/text_cleaner.dart';
 import '../services/tts_service.dart';
 import 'data_management_screen.dart';
 import 'widgets.dart';
@@ -135,6 +136,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
               final v = await textInputDialog(context, title: '章节分割正则', initial: _s.chapterRegex);
               if (v != null && v.trim().isNotEmpty) await _s.setChapterRegex(v.trim());
             },
+          ),
+
+          const SectionHeader(title: '文本清洗（导入时自动应用）'),
+          SettingRow(
+            title: '去乱码碎片',
+            subtitle: '删除「z u E w9 c w I8 a」这类空格分隔的字母/数字碎片',
+            trailing: Switch(
+              value: _s.cleanStripNoise,
+              onChanged: (v) async {
+                await _s.setCleanStripNoise(v);
+                setState(() {});
+              },
+            ),
+          ),
+          SettingRow(
+            title: '替换字符与莫忘码',
+            subtitle: '删除 �、锟斤拷、烫烫烫、???、□□□',
+            trailing: Switch(
+              value: _s.cleanStripMojibake,
+              onChanged: (v) async {
+                await _s.setCleanStripMojibake(v);
+                setState(() {});
+              },
+            ),
+          ),
+          SettingRow(
+            title: '屏蔽正则规则',
+            subtitle: _s.cleanRules.isEmpty
+                ? '未设置（在阅读器选中垃圾内容后点「屏蔽」可生成）'
+                : '${_s.cleanRules.length} 条 · 导入时自动应用',
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const CleanRuleScreen())),
           ),
 
           const SectionHeader(title: 'LLM（OpenAI 兼容）'),
@@ -846,4 +880,168 @@ class _WorkflowManagerScreenState extends State<WorkflowManagerScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已导入「$name」，点击它去映射节点')));
     }
   }
+}
+
+/// 屏蔽正则规则库：导入时自动应用；规则可由阅读器选区生成，也可手写
+class CleanRuleScreen extends StatefulWidget {
+  const CleanRuleScreen({super.key});
+
+  @override
+  State<CleanRuleScreen> createState() => _CleanRuleScreenState();
+}
+
+class _CleanRuleScreenState extends State<CleanRuleScreen> {
+  final _s = SettingsService.instance;
+  late final List<CleanRule> _rules = List.of(_s.cleanRules);
+
+  Future<void> _save() => _s.setCleanRules(_rules);
+
+  Future<void> _edit(int? index) async {
+    final res = await _editRuleDialog(context, index == null ? null : _rules[index]);
+    if (res == null) return;
+    setState(() {
+      if (index == null) {
+        _rules.add(res);
+      } else {
+        _rules[index] = res;
+      }
+    });
+    await _save();
+  }
+
+  Future<void> _delete(int index) async {
+    final r = _rules[index];
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('删除规则'),
+        content: Text('删除「${r.name}」？已导入的书不受影响。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('删除')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _rules.removeAt(index));
+    await _save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: const Text('屏蔽正则规则')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _edit(null),
+        icon: const Icon(Icons.add),
+        label: const Text('新增规则'),
+      ),
+      body: _rules.isEmpty
+          ? const Center(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text(
+                  '还没有规则。\n在阅读器里选中要屏蔽的内容（如签名、广告、回复区），\n点浮动菜单的「屏蔽」，即可生成头尾锚点正则。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 88),
+              itemCount: _rules.length,
+              itemBuilder: (context, i) {
+                final r = _rules[i];
+                return ListTile(
+                  contentPadding: const EdgeInsets.only(left: 4),
+                  title: Text(r.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(r.pattern,
+                      maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+                  onTap: () => _edit(i),
+                  trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Switch(
+                      value: r.enabled,
+                      onChanged: (v) async {
+                        setState(() => r.enabled = v);
+                        await _save();
+                      },
+                    ),
+                    IconButton(
+                      tooltip: '删除',
+                      icon: Icon(Icons.delete_outline, color: scheme.error),
+                      onPressed: () => _delete(i),
+                    ),
+                  ]),
+                );
+              },
+            ),
+    );
+  }
+}
+
+/// 规则编辑框（正则合法性即时校验）
+Future<CleanRule?> _editRuleDialog(BuildContext context, CleanRule? initial) async {
+  final name = TextEditingController(text: initial?.name ?? '');
+  final pattern = TextEditingController(text: initial?.pattern ?? '');
+  final err = ValueNotifier<String?>(null);
+  final res = await showDialog<CleanRule>(
+    context: context,
+    builder: (c) => ValueListenableBuilder<String?>(
+      valueListenable: err,
+      builder: (c, e, _) => AlertDialog(
+        title: Text(initial == null ? '新增屏蔽规则' : '编辑屏蔽规则'),
+        content: SizedBox(
+          width: 460,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: name,
+              decoration: const InputDecoration(
+                  labelText: '规则名', border: OutlineInputBorder(), isDense: true),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: pattern,
+              maxLines: 4,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              decoration: InputDecoration(
+                labelText: '正则（逐行匹配，命中即整块删除）',
+                hintText: r'^\s*签名[\s\S]*?回复倒序\s*$',
+                border: const OutlineInputBorder(),
+                isDense: true,
+                errorText: e,
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('取消')),
+          FilledButton(
+            onPressed: () {
+              final p = pattern.text.trim();
+              if (p.isEmpty) {
+                err.value = '正则不能为空';
+                return;
+              }
+              try {
+                RegExp(p, multiLine: true);
+              } on FormatException {
+                err.value = '正则不合法';
+                return;
+              }
+              final n = name.text.trim();
+              Navigator.pop(
+                  c, CleanRule(name: n.isEmpty ? '未命名规则' : n, pattern: p, enabled: initial?.enabled ?? true));
+            },
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    ),
+  );
+  name.dispose();
+  pattern.dispose();
+  err.dispose();
+  return res;
 }

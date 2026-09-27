@@ -31,6 +31,12 @@ class ImageStore {
     return p.join(dir, name);
   }
 
+  /// 封面路径：带时间戳，避免 Flutter 按路径缓存旧封面
+  Future<String> newCoverPath(int bookId, String ext) async {
+    final dir = await dirForBook(bookId);
+    return p.join(dir, 'cover_${DateTime.now().millisecondsSinceEpoch}$ext');
+  }
+
   Future<void> deleteBookImages(int bookId) async {
     final base = await baseDir();
     final d = Directory(p.join(base.path, '$bookId'));

@@ -107,6 +107,18 @@ class $BooksTable extends Books with TableInfo<$BooksTable, Book> {
     requiredDuringInsert: false,
     defaultValue: const Constant(''),
   );
+  static const VerificationMeta _coverPathMeta = const VerificationMeta(
+    'coverPath',
+  );
+  @override
+  late final GeneratedColumn<String> coverPath = GeneratedColumn<String>(
+    'cover_path',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(''),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -118,6 +130,7 @@ class $BooksTable extends Books with TableInfo<$BooksTable, Book> {
     lastChapter,
     lastParagraph,
     lore,
+    coverPath,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -192,6 +205,12 @@ class $BooksTable extends Books with TableInfo<$BooksTable, Book> {
         lore.isAcceptableOrUnknown(data['lore']!, _loreMeta),
       );
     }
+    if (data.containsKey('cover_path')) {
+      context.handle(
+        _coverPathMeta,
+        coverPath.isAcceptableOrUnknown(data['cover_path']!, _coverPathMeta),
+      );
+    }
     return context;
   }
 
@@ -237,6 +256,10 @@ class $BooksTable extends Books with TableInfo<$BooksTable, Book> {
         DriftSqlType.string,
         data['${effectivePrefix}lore'],
       )!,
+      coverPath: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}cover_path'],
+      )!,
     );
   }
 
@@ -256,6 +279,7 @@ class Book extends DataClass implements Insertable<Book> {
   final int lastChapter;
   final int lastParagraph;
   final String lore;
+  final String coverPath;
   const Book({
     required this.id,
     required this.title,
@@ -266,6 +290,7 @@ class Book extends DataClass implements Insertable<Book> {
     required this.lastChapter,
     required this.lastParagraph,
     required this.lore,
+    required this.coverPath,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -279,6 +304,7 @@ class Book extends DataClass implements Insertable<Book> {
     map['last_chapter'] = Variable<int>(lastChapter);
     map['last_paragraph'] = Variable<int>(lastParagraph);
     map['lore'] = Variable<String>(lore);
+    map['cover_path'] = Variable<String>(coverPath);
     return map;
   }
 
@@ -293,6 +319,7 @@ class Book extends DataClass implements Insertable<Book> {
       lastChapter: Value(lastChapter),
       lastParagraph: Value(lastParagraph),
       lore: Value(lore),
+      coverPath: Value(coverPath),
     );
   }
 
@@ -311,6 +338,7 @@ class Book extends DataClass implements Insertable<Book> {
       lastChapter: serializer.fromJson<int>(json['lastChapter']),
       lastParagraph: serializer.fromJson<int>(json['lastParagraph']),
       lore: serializer.fromJson<String>(json['lore']),
+      coverPath: serializer.fromJson<String>(json['coverPath']),
     );
   }
   @override
@@ -326,6 +354,7 @@ class Book extends DataClass implements Insertable<Book> {
       'lastChapter': serializer.toJson<int>(lastChapter),
       'lastParagraph': serializer.toJson<int>(lastParagraph),
       'lore': serializer.toJson<String>(lore),
+      'coverPath': serializer.toJson<String>(coverPath),
     };
   }
 
@@ -339,6 +368,7 @@ class Book extends DataClass implements Insertable<Book> {
     int? lastChapter,
     int? lastParagraph,
     String? lore,
+    String? coverPath,
   }) => Book(
     id: id ?? this.id,
     title: title ?? this.title,
@@ -349,6 +379,7 @@ class Book extends DataClass implements Insertable<Book> {
     lastChapter: lastChapter ?? this.lastChapter,
     lastParagraph: lastParagraph ?? this.lastParagraph,
     lore: lore ?? this.lore,
+    coverPath: coverPath ?? this.coverPath,
   );
   Book copyWithCompanion(BooksCompanion data) {
     return Book(
@@ -367,6 +398,7 @@ class Book extends DataClass implements Insertable<Book> {
           ? data.lastParagraph.value
           : this.lastParagraph,
       lore: data.lore.present ? data.lore.value : this.lore,
+      coverPath: data.coverPath.present ? data.coverPath.value : this.coverPath,
     );
   }
 
@@ -381,7 +413,8 @@ class Book extends DataClass implements Insertable<Book> {
           ..write('createdAt: $createdAt, ')
           ..write('lastChapter: $lastChapter, ')
           ..write('lastParagraph: $lastParagraph, ')
-          ..write('lore: $lore')
+          ..write('lore: $lore, ')
+          ..write('coverPath: $coverPath')
           ..write(')'))
         .toString();
   }
@@ -397,6 +430,7 @@ class Book extends DataClass implements Insertable<Book> {
     lastChapter,
     lastParagraph,
     lore,
+    coverPath,
   );
   @override
   bool operator ==(Object other) =>
@@ -410,7 +444,8 @@ class Book extends DataClass implements Insertable<Book> {
           other.createdAt == this.createdAt &&
           other.lastChapter == this.lastChapter &&
           other.lastParagraph == this.lastParagraph &&
-          other.lore == this.lore);
+          other.lore == this.lore &&
+          other.coverPath == this.coverPath);
 }
 
 class BooksCompanion extends UpdateCompanion<Book> {
@@ -423,6 +458,7 @@ class BooksCompanion extends UpdateCompanion<Book> {
   final Value<int> lastChapter;
   final Value<int> lastParagraph;
   final Value<String> lore;
+  final Value<String> coverPath;
   const BooksCompanion({
     this.id = const Value.absent(),
     this.title = const Value.absent(),
@@ -433,6 +469,7 @@ class BooksCompanion extends UpdateCompanion<Book> {
     this.lastChapter = const Value.absent(),
     this.lastParagraph = const Value.absent(),
     this.lore = const Value.absent(),
+    this.coverPath = const Value.absent(),
   });
   BooksCompanion.insert({
     this.id = const Value.absent(),
@@ -444,6 +481,7 @@ class BooksCompanion extends UpdateCompanion<Book> {
     this.lastChapter = const Value.absent(),
     this.lastParagraph = const Value.absent(),
     this.lore = const Value.absent(),
+    this.coverPath = const Value.absent(),
   }) : title = Value(title),
        format = Value(format);
   static Insertable<Book> custom({
@@ -456,6 +494,7 @@ class BooksCompanion extends UpdateCompanion<Book> {
     Expression<int>? lastChapter,
     Expression<int>? lastParagraph,
     Expression<String>? lore,
+    Expression<String>? coverPath,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -467,6 +506,7 @@ class BooksCompanion extends UpdateCompanion<Book> {
       if (lastChapter != null) 'last_chapter': lastChapter,
       if (lastParagraph != null) 'last_paragraph': lastParagraph,
       if (lore != null) 'lore': lore,
+      if (coverPath != null) 'cover_path': coverPath,
     });
   }
 
@@ -480,6 +520,7 @@ class BooksCompanion extends UpdateCompanion<Book> {
     Value<int>? lastChapter,
     Value<int>? lastParagraph,
     Value<String>? lore,
+    Value<String>? coverPath,
   }) {
     return BooksCompanion(
       id: id ?? this.id,
@@ -491,6 +532,7 @@ class BooksCompanion extends UpdateCompanion<Book> {
       lastChapter: lastChapter ?? this.lastChapter,
       lastParagraph: lastParagraph ?? this.lastParagraph,
       lore: lore ?? this.lore,
+      coverPath: coverPath ?? this.coverPath,
     );
   }
 
@@ -524,6 +566,9 @@ class BooksCompanion extends UpdateCompanion<Book> {
     if (lore.present) {
       map['lore'] = Variable<String>(lore.value);
     }
+    if (coverPath.present) {
+      map['cover_path'] = Variable<String>(coverPath.value);
+    }
     return map;
   }
 
@@ -538,7 +583,8 @@ class BooksCompanion extends UpdateCompanion<Book> {
           ..write('createdAt: $createdAt, ')
           ..write('lastChapter: $lastChapter, ')
           ..write('lastParagraph: $lastParagraph, ')
-          ..write('lore: $lore')
+          ..write('lore: $lore, ')
+          ..write('coverPath: $coverPath')
           ..write(')'))
         .toString();
   }
@@ -2095,6 +2141,7 @@ typedef $$BooksTableCreateCompanionBuilder =
       Value<int> lastChapter,
       Value<int> lastParagraph,
       Value<String> lore,
+      Value<String> coverPath,
     });
 typedef $$BooksTableUpdateCompanionBuilder =
     BooksCompanion Function({
@@ -2107,6 +2154,7 @@ typedef $$BooksTableUpdateCompanionBuilder =
       Value<int> lastChapter,
       Value<int> lastParagraph,
       Value<String> lore,
+      Value<String> coverPath,
     });
 
 final class $$BooksTableReferences
@@ -2183,6 +2231,11 @@ class $$BooksTableFilterComposer extends Composer<_$AppDatabase, $BooksTable> {
 
   ColumnFilters<String> get lore => $composableBuilder(
     column: $table.lore,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get coverPath => $composableBuilder(
+    column: $table.coverPath,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -2265,6 +2318,11 @@ class $$BooksTableOrderingComposer
     column: $table.lore,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<String> get coverPath => $composableBuilder(
+    column: $table.coverPath,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$BooksTableAnnotationComposer
@@ -2308,6 +2366,9 @@ class $$BooksTableAnnotationComposer
 
   GeneratedColumn<String> get lore =>
       $composableBuilder(column: $table.lore, builder: (column) => column);
+
+  GeneratedColumn<String> get coverPath =>
+      $composableBuilder(column: $table.coverPath, builder: (column) => column);
 
   Expression<T> chaptersRefs<T extends Object>(
     Expression<T> Function($$ChaptersTableAnnotationComposer a) f,
@@ -2372,6 +2433,7 @@ class $$BooksTableTableManager
                 Value<int> lastChapter = const Value.absent(),
                 Value<int> lastParagraph = const Value.absent(),
                 Value<String> lore = const Value.absent(),
+                Value<String> coverPath = const Value.absent(),
               }) => BooksCompanion(
                 id: id,
                 title: title,
@@ -2382,6 +2444,7 @@ class $$BooksTableTableManager
                 lastChapter: lastChapter,
                 lastParagraph: lastParagraph,
                 lore: lore,
+                coverPath: coverPath,
               ),
           createCompanionCallback:
               ({
@@ -2394,6 +2457,7 @@ class $$BooksTableTableManager
                 Value<int> lastChapter = const Value.absent(),
                 Value<int> lastParagraph = const Value.absent(),
                 Value<String> lore = const Value.absent(),
+                Value<String> coverPath = const Value.absent(),
               }) => BooksCompanion.insert(
                 id: id,
                 title: title,
@@ -2404,6 +2468,7 @@ class $$BooksTableTableManager
                 lastChapter: lastChapter,
                 lastParagraph: lastParagraph,
                 lore: lore,
+                coverPath: coverPath,
               ),
           withReferenceMapper: (p0) => p0
               .map(

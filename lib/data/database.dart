@@ -16,6 +16,8 @@ class Books extends Table {
   IntColumn get lastParagraph => integer().withDefault(const Constant(0))();
   // 设定说明（脚本「世界书」位的阅读版：人物设定/文风说明，注入 <!--设定说明-->）
   TextColumn get lore => text().withDefault(const Constant(''))();
+  // 封面：由已生成插图复制而来的图片绝对路径（'' = 用程序化渐变封面）
+  TextColumn get coverPath => text().withDefault(const Constant(''))();
 }
 
 /// 章节表：content 为段落文本，以单个 \n 分隔
@@ -70,7 +72,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTest(super.executor);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -84,6 +86,9 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 4) {
         await m.addColumn(workflows, workflows.isSecond);
+      }
+      if (from < 5) {
+        await m.addColumn(books, books.coverPath);
       }
     },
   );

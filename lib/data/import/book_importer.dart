@@ -7,6 +7,8 @@ import 'package:archive/archive.dart';
 import 'package:fast_gbk/fast_gbk.dart' as gbk;
 import 'package:xml/xml.dart';
 
+import '../../services/text_cleaner.dart';
+
 /// 章节分割结果
 class ImportedChapter {
   final String title;
@@ -116,14 +118,17 @@ String extractDocxText(Uint8List bytes) {
   return paras.join('\n\n');
 }
 
-/// 统一入口：按格式解析文件 → 章节
-List<ImportedChapter> importBookFile(String path, {String? chapterRegex}) {
+/// 统一入口：按格式解析文件 →（可选文本清洗）→ 章节。
+/// [cleanOptionsJson] 为 CleanOptions.toJson() 的 JSON 串（isolate 间传递用）。
+List<ImportedChapter> importBookFile(String path,
+    {String? chapterRegex, String? cleanOptionsJson}) {
   final bytes = File(path).readAsBytesSync();
   final lower = path.toLowerCase();
-  if (lower.endsWith('.docx')) {
-    return splitChapters(extractDocxText(bytes), regexStr: chapterRegex);
+  var text = lower.endsWith('.docx') ? extractDocxText(bytes) : decodeTxtBytes(bytes);
+  if (cleanOptionsJson != null && cleanOptionsJson.isNotEmpty) {
+    text = TextCleaner.cleanRawText(text, CleanOptions.decode(cleanOptionsJson));
   }
-  return splitChapters(decodeTxtBytes(bytes), regexStr: chapterRegex);
+  return splitChapters(text, regexStr: chapterRegex);
 }
 
 extension _FirstOrNull<E> on Iterable<E> {
