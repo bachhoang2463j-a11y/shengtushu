@@ -7,8 +7,11 @@ import 'package:flutter/services.dart';
 
 import '../data/database.dart';
 import '../data/import/book_importer.dart';
+import '../data/library_queries.dart';
 import '../services/image_store.dart';
+import '../services/library_activity.dart';
 import '../services/settings_service.dart';
+import 'data_management_screen.dart';
 import 'pdf_export_screen.dart';
 import 'reader_screen.dart';
 import 'settings_screen.dart';
@@ -34,9 +37,9 @@ class BookshelfScreen extends StatefulWidget {
 
 class _BookshelfScreenState extends State<BookshelfScreen> {
   bool _importing = false;
-  // 书架统计缓存（章节数 / 插图数），同一份 books 快照只查一次
-  List<Book>? _statsBooks;
-  Future<Map<int, (int, int)>>? _statsFuture;
+  late final Stream<List<Book>> _booksStream;
+  late final Stream<Map<int, int>> _chapterCounts;
+  late final Stream<Map<int, int>> _illustrationCounts;
 
   /// isolate 入口：文件解析（纯计算，不碰 UI）
   static List<ImportedChapter> _importTask((String, String) args) {
@@ -52,6 +55,10 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
   @override
   void initState() {
     super.initState();
+    _booksStream = _watchBooks();
+    final queries = LibraryQueries(widget.db);
+    _chapterCounts = queries.watchChapterCounts();
+    _illustrationCounts = queries.watchIllustrationCounts();
     kViewIntentChannel.setMethodCallHandler((call) async {
       if (call.method == 'onViewIntent') await _importFromViewIntent();
     });
@@ -61,7 +68,7 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
 
   /// 文件管理器「打开方式」导入，完成后直接打开书
   Future<void> _importFromViewIntent() async {
-    if (_importing) return;
+    if (_importing || LibraryActivity.instance.isTransferring) return;
     try {
       final data = await kViewIntentChannel.invokeMethod<Map<dynamic, dynamic>>('takeViewFile');
       if (data == null) return;
@@ -93,6 +100,15 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
 
   /// 解析文件并入库，返回新书 id（标题去掉扩展名）
   Future<int?> _persistImport(String path, String fileName) async {
+    try {
+      return await LibraryActivity.instance.write(() => _persistImportUnlocked(path, fileName));
+    } on LibraryBusyException catch (e) {
+      _toast(e.message);
+      return null;
+    }
+  }
+
+  Future<int?> _persistImportUnlocked(String path, String fileName) async {
     if (_importing) return null;
     setState(() => _importing = true);
     try {
@@ -151,35 +167,18 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
       ),
     );
     if (ok != true) return;
-    await widget.db.transaction(() async {
-      await (widget.db.delete(widget.db.illustrations)..where((t) => t.bookId.equals(book.id))).go();
-      await (widget.db.delete(widget.db.chapters)..where((t) => t.bookId.equals(book.id))).go();
-      await (widget.db.delete(widget.db.books)..where((t) => t.id.equals(book.id))).go();
-    });
-    await ImageStore.instance.deleteBookImages(book.id);
-  }
-
-  /// 每本书的（章节数, 插图数）
-  Future<Map<int, (int, int)>> _loadStats(List<Book> books) async {
-    final chapters = await widget.db.select(widget.db.chapters).get();
-    final ills = await widget.db.select(widget.db.illustrations).get();
-    final chCount = <int, int>{};
-    final illCount = <int, int>{};
-    for (final c in chapters) {
-      chCount[c.bookId] = (chCount[c.bookId] ?? 0) + 1;
+    try {
+      await LibraryActivity.instance.write(() async {
+        await widget.db.transaction(() async {
+          await (widget.db.delete(widget.db.illustrations)..where((t) => t.bookId.equals(book.id))).go();
+          await (widget.db.delete(widget.db.chapters)..where((t) => t.bookId.equals(book.id))).go();
+          await (widget.db.delete(widget.db.books)..where((t) => t.id.equals(book.id))).go();
+        });
+        await ImageStore.instance.deleteBookImages(book.id);
+      });
+    } on LibraryBusyException catch (e) {
+      _toast(e.message);
     }
-    for (final i in ills) {
-      illCount[i.bookId] = (illCount[i.bookId] ?? 0) + 1;
-    }
-    return {for (final b in books) b.id: (chCount[b.id] ?? 0, illCount[b.id] ?? 0)};
-  }
-
-  Future<Map<int, (int, int)>> _statsForBooks(List<Book> books) {
-    if (!identical(_statsBooks, books)) {
-      _statsBooks = books;
-      _statsFuture = _loadStats(books);
-    }
-    return _statsFuture!;
   }
 
   Widget _bookMenu(Book book) {
@@ -190,6 +189,13 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
         switch (v) {
           case 'lore':
             _editLore(book);
+            break;
+          case 'txt':
+          case 'backup':
+            Navigator.push(context, MaterialPageRoute(builder: (_) => DataManagementScreen(
+              db: widget.db, book: book,
+              initialAction: v == 'txt' ? DataTransferAction.text : DataTransferAction.backup,
+            )));
             break;
           case 'pdf':
             Navigator.push(context, MaterialPageRoute(
@@ -202,6 +208,8 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
       },
       itemBuilder: (_) => const [
         PopupMenuItem(value: 'lore', child: Text('设定说明（生图参考）')),
+        PopupMenuItem(value: 'txt', child: Text('导出 TXT')),
+        PopupMenuItem(value: 'backup', child: Text('备份本书')),
         PopupMenuItem(value: 'pdf', child: Text('导出 PDF')),
         PopupMenuItem(value: 'delete', child: Text('删除')),
       ],
@@ -331,7 +339,7 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
               label: const Text('导入 TXT / DOCX'),
             ),
       body: StreamBuilder<List<Book>>(
-        stream: _watchBooks(),
+        stream: _booksStream,
         builder: (context, snap) {
           final books = snap.data ?? const <Book>[];
           if (books.isEmpty) {
@@ -349,11 +357,11 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
               ),
             );
           }
-          return FutureBuilder<Map<int, (int, int)>>(
-            future: _statsForBooks(books),
-            builder: (context, statSnap) {
-              final stats = statSnap.data;
-              return GridView.builder(
+          return StreamBuilder<Map<int, int>>(
+            stream: _chapterCounts,
+            builder: (context, chapters) => StreamBuilder<Map<int, int>>(
+              stream: _illustrationCounts,
+              builder: (context, illustrations) => GridView.builder(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 88),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 2,
@@ -364,11 +372,11 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
                 itemCount: books.length,
                 itemBuilder: (context, i) {
                   final book = books[i];
-                  final (chCount, illCount) = stats?[book.id] ?? (0, 0);
-                  return _bookCard(book, chCount, illCount);
+                  return _bookCard(book, chapters.data?[book.id] ?? 0,
+                      illustrations.data?[book.id] ?? 0);
                 },
-              );
-            },
+              ),
+            ),
           );
         },
       ),
@@ -399,8 +407,13 @@ class _BookshelfScreenState extends State<BookshelfScreen> {
       ),
     );
     if (ok == true) {
-      await (widget.db.update(widget.db.books)..where((t) => t.id.equals(book.id)))
-          .write(BooksCompanion(lore: Value(ctrl.text.trim())));
+      try {
+        await LibraryActivity.instance.write(() =>
+          (widget.db.update(widget.db.books)..where((t) => t.id.equals(book.id)))
+              .write(BooksCompanion(lore: Value(ctrl.text.trim()))));
+      } on LibraryBusyException catch (e) {
+        _toast(e.message);
+      }
     }
   }
 }

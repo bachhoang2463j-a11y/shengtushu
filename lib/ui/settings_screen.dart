@@ -12,6 +12,7 @@ import '../services/comfyui_client.dart';
 import '../services/default_workflow.dart';
 import '../services/settings_service.dart';
 import '../services/tts_service.dart';
+import 'data_management_screen.dart';
 import 'widgets.dart';
 import 'workflow_map_screen.dart';
 
@@ -70,6 +71,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         children: [
+          const SectionHeader(title: '数据'),
+          SettingRow(
+            title: '数据管理',
+            subtitle: '书库备份 / 从备份导入 / 另存与分享',
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(context, MaterialPageRoute(
+                builder: (_) => DataManagementScreen(db: widget.db))),
+          ),
           const SectionHeader(title: '阅读'),
           SettingRow(
             title: '字号',

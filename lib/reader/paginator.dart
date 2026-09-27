@@ -77,12 +77,29 @@ class PageLayoutConfig {
   });
 }
 
+class LayoutBatch {
+  final List<ReaderPage> pages;
+  final List<double> flowHeights;
+  final bool isComplete;
+  const LayoutBatch(this.pages, this.flowHeights, {this.isComplete = false});
+}
+
 class Paginator {
-  /// 流式分页：每处理 [chunkSize] 个版面项让出一次事件循环并产出已完成的新页。
   static Stream<List<ReaderPage>> paginateStream({
     required List<LayoutItem> items,
     required PageLayoutConfig config,
     int chunkSize = 80,
+  }) async* {
+    await for (final batch in layoutStream(items: items, config: config, chunkSize: chunkSize)) {
+      if (batch.pages.isNotEmpty) yield batch.pages;
+    }
+  }
+
+  /// 每次测量同时产出分页与连续流高度；批次只含增量，不保留全章快照。
+  static Stream<LayoutBatch> layoutStream({
+    required List<LayoutItem> items,
+    required PageLayoutConfig config,
+    int chunkSize = 16,
   }) async* {
     final style = TextStyle(
       fontSize: config.fontSize,
@@ -90,114 +107,112 @@ class Paginator {
       fontFamily: config.fontFamily.isEmpty ? null : config.fontFamily,
       color: const ui.Color(0xFF000000),
     );
-
-    final pages = <List<PageBlock>>[];
+    var ready = <ReaderPage>[];
+    var heights = <double>[];
     var current = <PageBlock>[];
     var used = 0.0;
+    var prevPar = -1;
     var sinceYield = 0;
-    var yieldedCount = 0; // 已产出的页数（每次只产出增量，严禁全量快照）
+    final clock = Stopwatch()..start();
 
     void newPage() {
-      if (current.isNotEmpty) pages.add(current);
+      if (current.isNotEmpty) ready.add(ReaderPage(current));
       current = <PageBlock>[];
-      used = 0.0;
+      used = 0;
+    }
+
+    LayoutBatch takeBatch({bool complete = false}) {
+      final batch = LayoutBatch(ready, heights, isComplete: complete);
+      ready = <ReaderPage>[];
+      heights = <double>[];
+      sinceYield = 0;
+      clock.reset();
+      return batch;
     }
 
     for (final item in items) {
       if (item is ImageItem) {
-        // 与渲染口径一致：渲染侧图片 clamp(60, 页高-12) 且带 12px 上下 margin
-        final h = (config.width / item.block.aspect.clamp(0.2, 5.0)).clamp(60.0, config.height - 12);
+        final h = (config.width / item.block.aspect.clamp(0.2, 5.0))
+            .clamp(60.0, config.height - 12);
+        heights.add(h + 12);
         if (used > 0 && used + h + 12 > config.height) newPage();
         if (current.isEmpty && h + 12 > config.height) {
-          // 单图高于整页：缩到整页高度
           current.add(item.block);
-          used = config.height;
           newPage();
-          continue;
+        } else {
+          current.add(item.block);
+          used += h + 12 + config.paragraphSpacing * 0.5;
         }
-        current.add(item.block);
-        used += h + 12 + config.paragraphSpacing * 0.5;
-        continue;
+      } else {
+        final par = item as TextItem;
+        if (config.height - used < config.fontSize * config.lineHeight) newPage();
+        final painted = _paint(par.text, style, config.width);
+        try {
+          heights.add((par.paragraphIndex > prevPar ? config.paragraphSpacing : 0) +
+              (par.text.isEmpty ? config.fontSize * config.lineHeight : painted.height));
+          final metrics = painted.computeLineMetrics();
+          final lineCount = metrics.length;
+          var fromLine = 0;
+          var firstChunk = true;
+          while (fromLine < lineCount || (lineCount == 0 && firstChunk)) {
+            final avail = config.height - used;
+            final spacing = firstChunk && (current.isEmpty || par.paragraphIndex > current.last.paragraphIndex)
+                ? config.paragraphSpacing : 0.0;
+            final nextLineHeight = lineCount == 0 ? config.fontSize * config.lineHeight : metrics[fromLine].height;
+            if (avail < nextLineHeight + spacing && current.isNotEmpty) {
+              newPage();
+              continue;
+            }
+            if (lineCount == 0 && firstChunk) {
+              current.add(TextBlock(par.paragraphIndex, text: '', isFirst: true, isLast: true));
+              used += config.fontSize * config.lineHeight + spacing;
+              break;
+            }
+            var endLine = fromLine;
+            double acc = 0;
+            while (endLine < lineCount) {
+              final lh = metrics[endLine].height +
+                  (endLine == fromLine ? spacing : 0);
+              if (acc + lh > avail && acc > 0) break;
+              acc += lh;
+              endLine++;
+            }
+            if (endLine == fromLine) {
+              endLine = fromLine + 1;
+              acc = metrics[fromLine].height;
+            }
+            final fromChar = fromLine == 0 ? 0 : _charOffsetAtLine(metrics, painted, fromLine);
+            final toChar = endLine >= lineCount ? par.text.length : _charOffsetAtLine(metrics, painted, endLine);
+            current.add(TextBlock(par.paragraphIndex,
+                text: par.text.substring(fromChar, toChar),
+                isFirst: fromLine == 0, isLast: endLine >= lineCount));
+            used += acc;
+            fromLine = endLine;
+            firstChunk = false;
+            if (used >= config.height - 0.5) newPage();
+            if (ready.isNotEmpty && clock.elapsedMilliseconds >= 8) {
+              yield takeBatch();
+              await Future<void>.delayed(Duration.zero);
+              clock.reset();
+            }
+          }
+        } finally {
+          painted.dispose();
+        }
       }
-
-      final par = item as TextItem;
-      final remaining = config.height - used;
-      if (remaining < config.fontSize * config.lineHeight) {
-        newPage();
-      }
-      // 整段测量
-      final painted = _paint(par.text, style, config.width);
-      final lineMetrics = painted.computeLineMetrics();
-      final lineCount = lineMetrics.length;
-      var fromLine = 0;
-      var lineIdx = 0;
-      var firstChunk = true;
-
-      while (lineIdx < lineCount || (lineCount == 0 && firstChunk)) {
-        final avail = config.height - used;
-        if (avail < config.fontSize * config.lineHeight && current.isNotEmpty) {
-          newPage();
-          continue;
-        }
-        if (lineCount == 0 && firstChunk) {
-          // 空段
-          current.add(TextBlock(par.paragraphIndex, text: '', isFirst: true, isLast: true));
-          used += config.fontSize * config.lineHeight;
-          firstChunk = false;
-          break;
-        }
-        // 从 fromLine 起累积行，直到放不下
-        var endLine = fromLine;
-        double acc = 0;
-        while (endLine < lineCount) {
-          final lh = lineMetrics[endLine].height + (endLine == 0 && firstChunk ? config.paragraphSpacing : 0);
-          if (acc + lh > avail && acc > 0) break;
-          acc += lh;
-          endLine++;
-        }
-        if (endLine == fromLine) {
-          // 单行都放不下且页为空（极端字号），强制放一行防死循环
-          endLine = fromLine + 1;
-          acc = lineMetrics[fromLine].height;
-        }
-        // 计算该行区间对应的字符区间
-        final fromChar = fromLine == 0 ? 0 : _charOffsetAtLine(lineMetrics, painted, fromLine);
-        final toChar = endLine >= lineCount ? par.text.length : _charOffsetAtLine(lineMetrics, painted, endLine);
-        final slice = par.text.substring(fromChar, toChar);
-        current.add(TextBlock(par.paragraphIndex,
-            text: slice, isFirst: fromLine == 0, isLast: endLine >= lineCount));
-        used += acc;
-        lineIdx = endLine;
-        fromLine = endLine;
-        firstChunk = false;
-        if (used >= config.height - 0.5) newPage();
-      }
-      painted.dispose();
-
+      prevPar = item.paragraphIndex;
       sinceYield++;
-      if (sinceYield >= chunkSize) {
-        sinceYield = 0;
+      if (sinceYield >= chunkSize || clock.elapsedMilliseconds >= 8) {
+        yield takeBatch();
         await Future<void>.delayed(Duration.zero);
-        if (pages.length > yieldedCount) {
-          final delta = pages.sublist(yieldedCount);
-          yieldedCount = pages.length;
-          yield [for (final b in delta) ReaderPage(b)];
-        }
+        clock.reset();
       }
     }
-    if (current.isNotEmpty) pages.add(current);
-    if (pages.length > yieldedCount) {
-      yield [for (final b in pages.sublist(yieldedCount)) ReaderPage(b)];
-    }
+    newPage();
+    yield takeBatch(complete: true);
   }
 
-  // ---------- 连续滚动模式（上下滚动）辅助 ----------
-  // 滚动模式不按页切块渲染，整章段落直接连续排版；这两个函数提供
-  // 「滚动位置 ↔ 段落/页」的映射。测高规则必须与 reader_screen 的渲染保持一致。
-
-  /// 逐项估算连续流高度（不含页面概念）：
-  /// 段首（paragraphIndex 与前一项不同）加一次 config.paragraphSpacing；
-  /// 空段按一行高计；插图高度 = 内容宽/aspect 夹取 [minImageH, maxImageH]，再加上下 margin。
+  /// 用于独立高度估算；阅读器走 layoutStream，避免再次测量相同正文。
   static List<double> estimateFlowHeights(
     List<LayoutItem> items,
     PageLayoutConfig config, {
@@ -234,7 +249,6 @@ class Paginator {
     return heights;
   }
 
-  /// 高度表 → 每项顶边的累计偏移表（offsets[0] = 0）。
   static List<double> cumulativeOffsets(List<double> heights) {
     final offsets = List<double>.filled(heights.length, 0);
     var acc = 0.0;
@@ -245,7 +259,6 @@ class Paginator {
     return offsets;
   }
 
-  /// 二分：返回最后一个 offsets[i] <= y 的下标；offsets 为空返回 -1，y < offsets[0] 返回 0。
   static int flowIndexAtOffset(List<double> offsets, double y) {
     if (offsets.isEmpty) return -1;
     if (y < offsets[0]) return 0;
@@ -263,18 +276,15 @@ class Paginator {
 
   static TextPainter _paint(String text, TextStyle style, double width) {
     final tp = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: ui.TextDirection.ltr,
+      text: TextSpan(text: text, style: style), textDirection: ui.TextDirection.ltr,
     );
     tp.layout(maxWidth: width);
     return tp;
   }
 
-  /// 第 [line] 行（0-based）起始字符偏移
   static int _charOffsetAtLine(List<ui.LineMetrics> metrics, TextPainter tp, int line) {
     if (line < 0 || line >= metrics.length) return 0;
     final m = metrics[line];
-    final pos = tp.getPositionForOffset(ui.Offset(0, m.baseline - m.ascent + m.height * 0.5));
-    return pos.offset;
+    return tp.getPositionForOffset(ui.Offset(0, m.baseline - m.ascent + m.height * 0.5)).offset;
   }
 }

@@ -1,5 +1,6 @@
 package com.walkeatround.shengtushu
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -12,9 +13,38 @@ import java.io.File
 class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
     private var pendingUri: Uri? = null
+    private var saveResult: MethodChannel.Result? = null
+    private var saveSource: File? = null
+    private val saveRequestCode = 4102
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "shengtushu/document_export")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "saveDocument") {
+                    result.notImplemented()
+                } else if (saveResult != null) {
+                    result.error("busy", "另一个文件仍在另存中", null)
+                } else {
+                    try {
+                        val source = File(call.argument<String>("path") ?: "").canonicalFile
+                        val allowed = source.path.startsWith(cacheDir.canonicalPath + File.separator)
+                        require(allowed && source.isFile) { "导出文件不存在或不在临时目录" }
+                        val name = call.argument<String>("name") ?: source.name
+                        saveResult = result
+                        saveSource = source
+                        startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = call.argument<String>("mimeType") ?: "application/octet-stream"
+                            putExtra(Intent.EXTRA_TITLE, name)
+                        }, saveRequestCode)
+                    } catch (e: Exception) {
+                        saveResult = null
+                        saveSource = null
+                        result.error("save_failed", e.message, null)
+                    }
+                }
+            }
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "shengtushu/view_intent")
         channel?.setMethodCallHandler { call, result ->
             if (call.method == "takeViewFile") {
@@ -50,6 +80,38 @@ class MainActivity : FlutterActivity() {
         if (pendingUri != null) {
             channel?.invokeMethod("onViewIntent", null)
         }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != saveRequestCode) return
+        val result = saveResult ?: return
+        val source = saveSource
+        val uri = data?.data
+        if (resultCode != Activity.RESULT_OK || uri == null || source == null) {
+            saveResult = null
+            saveSource = null
+            result.success(null)
+            return
+        }
+        Thread {
+            try {
+                val output = contentResolver.openOutputStream(uri, "wt")
+                    ?: throw IllegalStateException("无法写入所选位置")
+                output.use { target -> source.inputStream().use { it.copyTo(target) } }
+                runOnUiThread {
+                    saveResult = null
+                    saveSource = null
+                    result.success(queryDisplayName(uri) ?: uri.toString())
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    saveResult = null
+                    saveSource = null
+                    result.error("save_failed", "另存失败，所选位置可能留有不完整文件：${e.message}", null)
+                }
+            }
+        }.start()
     }
 
     private fun captureViewIntent(intent: Intent?) {

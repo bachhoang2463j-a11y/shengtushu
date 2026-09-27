@@ -7,9 +7,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../data/database.dart';
+import '../data/library_queries.dart';
 import '../reader/paginator.dart';
 import '../services/chapter_editor.dart';
 import '../services/generation_service.dart';
+import '../services/library_activity.dart';
 import '../services/quote_expander.dart';
 import '../services/settings_service.dart';
 import '../services/tts_service.dart';
@@ -38,9 +40,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final _settings = SettingsService.instance;
 
   Book? _book;
-  List<Chapter> _chapters = const [];
+  List<ChapterEntry> _chapters = const [];
   int _chapterIdx = 0;
   Chapter? _chapter;
+  List<String> _paragraphs = const [];
+  int _chapterLoadSeq = 0;
+  int _contentRevision = 0;
+  String? _loadError;
+  StreamSubscription<Chapter>? _chapterSubscription;
   Stream<List<Illustration>>? _illsStream;
 
   List<ReaderPage> _pages = const [];
@@ -50,6 +57,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   int _repaginateSeq = 0;
   double _pageHeight = 0;
   Map<int, Illustration> _illsById = const {};
+  final Map<int, (String, List<String>)> _historyCache = {};
 
   // 连续滚动模式：整段流 + 累计顶边偏移（含列表顶部 padding）
   List<LayoutItem> _flowItems = const [];
@@ -74,7 +82,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _overlayVisible = false;
   bool _stylePanelVisible = false;
   String _lastLightTheme = 'sepia';
-  DateTime _now = DateTime.now();
+  final _now = ValueNotifier(DateTime.now());
   Timer? _clockTimer;
 
   @override
@@ -82,7 +90,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _clockTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) setState(() => _now = DateTime.now());
+      if (mounted) _now.value = DateTime.now();
     });
     _load();
   }
@@ -90,6 +98,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void dispose() {
     _clockTimer?.cancel();
+    _now.dispose();
+    _chapterLoadSeq++;
+    _repaginateSeq++;
+    _chapterSubscription?.cancel();
     _histBadgeTimer?.cancel();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _pageCtrl?.dispose();
@@ -98,43 +110,104 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _load() async {
-    final book = await (widget.db.select(widget.db.books)..where((t) => t.id.equals(widget.bookId))).getSingle();
-    final chapters = await (widget.db.select(widget.db.chapters)
-          ..where((t) => t.bookId.equals(widget.bookId))
-          ..orderBy([(t) => OrderingTerm.asc(t.idx)]))
-        .get();
-    if (!mounted || chapters.isEmpty) return;
-    setState(() {
-      _book = book;
-      _chapters = chapters;
-      _chapterIdx = book.lastChapter.clamp(0, chapters.length - 1);
-      _pendingRestoreParagraph = book.lastParagraph;
-    });
-    await _loadChapter();
+    try {
+      final book = await (widget.db.select(widget.db.books)
+            ..where((t) => t.id.equals(widget.bookId)))
+          .getSingle();
+      final chapters = await LibraryQueries(widget.db).chapterIndex(widget.bookId);
+      if (!mounted) return;
+      if (chapters.isEmpty) {
+        setState(() => _loadError = '这本书没有章节');
+        return;
+      }
+      setState(() {
+        _book = book;
+        _chapters = chapters;
+        _chapterIdx = book.lastChapter.clamp(0, chapters.length - 1);
+        _pendingRestoreParagraph = book.lastParagraph;
+      });
+      await _loadChapter();
+    } catch (e) {
+      if (mounted) setState(() => _loadError = '读取书籍失败：$e');
+    }
   }
 
   Future<void> _loadChapter() async {
-    final ch = _chapters[_chapterIdx];
-    _illsStream = (widget.db.select(widget.db.illustrations)
-          ..where((t) => t.chapterId.equals(ch.id))
-          ..orderBy([(t) => OrderingTerm.asc(t.afterParagraph)]))
-        .watch();
+    final seq = ++_chapterLoadSeq;
+    final id = _chapters[_chapterIdx].id;
+    final sameChapter = _chapter?.id == id;
+    final anchor = _pendingRestoreParagraph ?? (sameChapter ? _currentAnchorParagraph() : 0);
+    _repaginateSeq++;
+    _chapterSubscription?.cancel();
+    final previousPageController = _pageCtrl;
+    final previousScrollController = _scrollCtrl;
+    _pageCtrl = null;
+    _scrollCtrl = null;
+    _scrollListening = false;
+    _selRegionState = null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      previousPageController?.dispose();
+      previousScrollController?.dispose();
+    });
     setState(() {
-      _chapter = ch;
+      _loadError = null;
+      _chapter = null;
+      _paragraphs = const [];
       _layoutKey = '';
       _pages = const [];
+      _pageStartPara = const [];
+      _flowItems = const [];
+      _flowOffsets = const [];
+      _illsById = const {};
+      _historyCache.clear();
+      _repaginating = false;
       _curPage = 0;
       _selectionText = '';
+      _pendingRestoreParagraph = anchor;
     });
+    final query = widget.db.select(widget.db.chapters)..where((t) => t.id.equals(id));
+    try {
+      final ch = await query.getSingle();
+      if (!mounted || seq != _chapterLoadSeq) return;
+      _illsStream = (widget.db.select(widget.db.illustrations)
+            ..where((t) => t.chapterId.equals(id))
+            ..orderBy([(t) => OrderingTerm.asc(t.afterParagraph)]))
+          .watch();
+      setState(() {
+        _chapter = ch;
+        _paragraphs = ch.content.split('\n');
+        _contentRevision++;
+      });
+      _chapterSubscription = query.watchSingle().listen((latest) {
+        if (!mounted || seq != _chapterLoadSeq || latest.content == _chapter?.content) return;
+        final position = _pendingRestoreParagraph ?? _currentAnchorParagraph();
+        setState(() {
+          _chapter = latest;
+          _paragraphs = latest.content.split('\n');
+          _contentRevision++;
+          _pendingRestoreParagraph = position.clamp(0, _paragraphs.length - 1);
+        });
+      }, onError: (Object e) {
+        if (mounted && seq == _chapterLoadSeq) setState(() => _loadError = '读取章节失败：$e');
+      });
+    } catch (e) {
+      if (mounted && seq == _chapterLoadSeq) setState(() => _loadError = '读取章节失败：$e');
+    }
   }
 
   Future<void> _switchChapter(int idx) async {
     if (idx < 0 || idx >= _chapters.length) return;
-    setState(() {
-      _chapterIdx = idx;
-      _pendingRestoreParagraph = 0;
-    });
+    _chapterIdx = idx;
+    _pendingRestoreParagraph = 0;
     await _loadChapter();
+  }
+
+  List<String> _imageHistory(Illustration illustration) {
+    final cached = _historyCache[illustration.id];
+    if (cached != null && cached.$1 == illustration.history) return cached.$2;
+    final decoded = GenerationService.decodeHistory(illustration.history);
+    _historyCache[illustration.id] = (illustration.history, decoded);
+    return decoded;
   }
 
   List<LayoutItem> _buildItems(List<String> paras, List<Illustration> ills) {
@@ -172,7 +245,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           imagePath: ill.imagePath,
           error: ill.error,
           prompt: ill.prompt,
-          history: GenerationService.decodeHistory(ill.history),
+          history: _imageHistory(ill),
         )));
       }
       if (cursor < para.length) {
@@ -190,12 +263,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   /// 流式重排版：期间旧页面保持可见可翻，完成后按段落锚点回位
-  Future<void> _recompute(List<String> paras, List<Illustration> ills, Size size) async {
-    final seq = ++_repaginateSeq;
-    final anchor = _pendingRestoreParagraph ?? _currentAnchorParagraph();
-    _pendingRestoreParagraph = null;
-    if (mounted) setState(() => _repaginating = true);
-
+  Future<void> _recompute(List<String> paras, List<Illustration> ills, Size size, int seq) async {
+    if (!mounted || seq != _repaginateSeq) return;
+    final anchor = (_pendingRestoreParagraph ?? _currentAnchorParagraph()).clamp(0, paras.length - 1);
+    _pendingRestoreParagraph = anchor;
+    setState(() => _repaginating = true);
     final config = PageLayoutConfig(
       width: size.width,
       height: size.height,
@@ -204,38 +276,47 @@ class _ReaderScreenState extends State<ReaderScreen> {
       fontFamily: kReaderFontFamily,
       paragraphSpacing: _paragraphSpacing,
     );
-    // 连续滚动模式的数据：整段流 + 与渲染规则一致的测高累计偏移
     final items = _buildItems(paras, ills);
-    final heights = Paginator.estimateFlowHeights(items, config, maxImageH: size.height - 12);
-    final offsets = Paginator.cumulativeOffsets(heights);
-    for (var i = 0; i < offsets.length; i++) {
-      offsets[i] += _padV; // ListView 顶部 padding
-    }
-    if (seq != _repaginateSeq) return;
-    if (mounted) {
-      setState(() {
-        _flowItems = items;
-        _flowOffsets = offsets;
-      });
-    }
-
     final fresh = <ReaderPage>[];
-    await for (final batch in Paginator.paginateStream(items: items, config: config)) {
-      if (seq != _repaginateSeq) return; // 已有更新的排版任务
-      fresh.addAll(batch);
+    final starts = <int>[];
+    final offsets = <double>[];
+    var nextOffset = _padV;
+    var applied = false;
+    await for (final batch in Paginator.layoutStream(items: items, config: config)) {
+      if (!mounted || seq != _repaginateSeq) return;
+      fresh.addAll(batch.pages);
+      for (final page in batch.pages) {
+        starts.add(page.blocks.isEmpty ? 0 : page.blocks.first.paragraphIndex);
+      }
+      for (final height in batch.flowHeights) {
+        offsets.add(nextOffset);
+        nextOffset += height;
+      }
+      var target = fresh.indexWhere((p) => p.blocks.any((b) => b.paragraphIndex >= anchor));
+      if (target < 0 && !batch.isComplete) continue;
+      if (target < 0) target = 0;
+      final firstApply = !applied;
+      setState(() {
+        _pages = fresh;
+        _pageStartPara = starts;
+        _flowItems = items.sublist(0, offsets.length);
+        _flowOffsets = offsets;
+        _pageHeight = size.height;
+        _repaginating = !batch.isComplete;
+        if (firstApply) {
+          _curPage = target.clamp(0, fresh.length - 1);
+          _pendingRestoreParagraph = null;
+        }
+      });
+      applied = true;
+      if (firstApply) {
+        final page = _curPage;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && seq == _repaginateSeq) _jumpTo(page);
+        });
+      }
+      if (!batch.isComplete) await WidgetsBinding.instance.endOfFrame;
     }
-    if (seq != _repaginateSeq || !mounted) return;
-
-    var target = fresh.indexWhere((p) => p.blocks.any((b) => b.paragraphIndex >= anchor));
-    if (target < 0) target = 0;
-    setState(() {
-      _pages = fresh;
-      _pageStartPara = [for (final p in fresh) p.blocks.isEmpty ? 0 : p.blocks.first.paragraphIndex];
-      _pageHeight = size.height;
-      _repaginating = false;
-      _curPage = target.clamp(0, fresh.length - 1);
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(_curPage));
   }
 
   void _jumpTo(int page) {
@@ -300,12 +381,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _saveProgress() async {
-    if (_book == null || _pages.isEmpty || _curPage >= _pages.length) return;
+    if (_book == null || _chapter == null || _pendingRestoreParagraph != null ||
+        LibraryActivity.instance.isTransferring || _pages.isEmpty || _curPage >= _pages.length) {
+      return;
+    }
     final blocks = _pages[_curPage].blocks;
     final first = blocks.isEmpty ? 0 : blocks.first.paragraphIndex;
-    await (widget.db.update(widget.db.books)..where((t) => t.id.equals(widget.bookId))).write(
-      BooksCompanion(lastChapter: Value(_chapterIdx), lastParagraph: Value(first)),
-    );
+    await LibraryActivity.instance.write(() =>
+      (widget.db.update(widget.db.books)..where((t) => t.id.equals(widget.bookId))).write(
+        BooksCompanion(lastChapter: Value(_chapterIdx), lastParagraph: Value(first)),
+      ));
   }
 
   // ---------- 沉浸式交互（demo：三分区点击 / 呼出栏 / 排版面板） ----------
@@ -367,8 +452,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Widget _miniHeader(Chapter ch) {
     final c = context.readerSub;
-    final hh = _now.hour.toString().padLeft(2, '0');
-    final mm = _now.minute.toString().padLeft(2, '0');
     return SizedBox(
       height: 38,
       child: Padding(
@@ -382,7 +465,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
             ),
           ),
-          Text('$hh:$mm', style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
+          ValueListenableBuilder<DateTime>(
+            valueListenable: _now,
+            builder: (context, now, _) => Text(
+              '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
+              style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2),
+            ),
+          ),
         ]),
       ),
     );
@@ -391,13 +480,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget _miniFooter() {
     final c = context.readerSub;
     final total = _pages.length;
-    final pct = total == 0 ? '' : '${(((_curPage + 1) / total) * 100).toStringAsFixed(1)}%';
+    final pct = _repaginating ? '排版中…' : total == 0 ? '' : '${(((_curPage + 1) / total) * 100).toStringAsFixed(1)}%';
     return SizedBox(
       height: 34,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(_padH, 0, _padH, 6),
         child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text('第 ${_curPage + 1} / $total 页', style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
+          Text(_repaginating ? '第 ${_curPage + 1} 页' : '第 ${_curPage + 1} / $total 页', style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
           Text(pct, style: TextStyle(fontSize: 11, color: c, letterSpacing: 0.2)),
         ]),
       ),
@@ -490,7 +579,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
                 child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text('第 ${_curPage + 1} / $total 页 · ${ch.title}',
+                  Text(_repaginating ? '第 ${_curPage + 1} 页 · 排版中 · ${ch.title}' : '第 ${_curPage + 1} / $total 页 · ${ch.title}',
                       maxLines: 1, overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                           fontSize: 12, fontWeight: FontWeight.w600, color: context.readerSub)),
@@ -504,7 +593,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         value: total == 0 ? 1 : (_curPage + 1).clamp(1, total).toDouble(),
                         min: 1,
                         max: total < 1 ? 1 : total.toDouble(),
-                        onChanged: total < 1 ? null : (v) => _jumpTo(v.toInt() - 1),
+                        onChanged: total < 2 || _repaginating ? null : (v) => _jumpTo(v.toInt() - 1),
                         onChangeEnd: (_) => _saveProgress(),
                       ),
                     ),
@@ -648,12 +737,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (idxs.isEmpty) return (0, const []);
     final first = idxs.first;
     final last = idxs.last;
-    final paras = _chapter!.content.split('\n');
+    final paras = _paragraphs;
     return (first, [for (var i = first; i <= last && i < paras.length; i++) paras[i]]);
   }
 
   List<String> _historyBefore(int firstParagraph) {
-    final paras = _chapter!.content.split('\n');
+    final paras = _paragraphs;
     final n = _settings.historyCount;
     final start = (firstParagraph - n).clamp(0, paras.length);
     return [for (var i = start; i < firstParagraph; i++) paras[i]];
@@ -697,7 +786,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先长按滑动选中一段文字')));
       return;
     }
-    final paras = ch.content.split('\n');
+    final paras = _paragraphs;
     var (anchor, offset) = GenerationService.locateSelectionEnd(
         paras, sel, hintParagraph: _currentAnchorParagraph());
     if (anchor < 0) {
@@ -737,7 +826,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       return;
     }
     if (ch != null) {
-      text = QuoteExpander.expand(ch.content.split('\n'), text,
+      text = QuoteExpander.expand(_paragraphs, text,
           hintParagraph: _currentAnchorParagraph());
     }
     final messenger = ScaffoldMessenger.of(context);
@@ -832,7 +921,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final live = _illsById[illId];
     if (live == null) return;
     final paths = [
-      ...GenerationService.decodeHistory(live.history),
+      ..._imageHistory(live),
       if ((live.imagePath ?? '').isNotEmpty) live.imagePath!,
     ];
     final idx = paths.indexOf(path);
@@ -966,7 +1055,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final ch = _chapter;
     if (ch == null) return;
     final sel = _selectionText.trim();
-    final paras = ch.content.split('\n');
+    final paras = _paragraphs;
     final hint = _currentAnchorParagraph();
     final (sP, sO) = ChapterEditor.locateSelectionStart(paras, sel, hintParagraph: hint);
     final (eP, eO) = GenerationService.locateSelectionEnd(paras, sel, hintParagraph: hint);
@@ -980,32 +1069,41 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
     final edited = await textInputDialog(context, title: '编辑选中文字', initial: sel, maxLines: 12);
     if (edited == null || edited.trim().isEmpty || edited == sel.trim()) return;
-    await ChapterEditor.replaceSelection(widget.db, ch,
-        startPara: sP, startOffset: sO, endPara: eP, endOffset: eO, editedText: edited);
+    try {
+      await LibraryActivity.instance.write(() => ChapterEditor.replaceSelection(widget.db, ch,
+          startPara: sP, startOffset: sO, endPara: eP, endOffset: eO, editedText: edited));
+    } on LibraryBusyException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      return;
+    }
+    if (!mounted) return;
     await _loadChapter();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已保存，插图锚点已重定位')));
     }
   }
 
-  void _showChapterDrawer() {
-    showModalBottomSheet(
+  Future<void> _showChapterDrawer() async {
+    TransitionRoute<dynamic>? drawerRoute;
+    final selected = await showModalBottomSheet<int>(
       context: context,
-      builder: (c) => SafeArea(
-        child: ListView.builder(
-          itemCount: _chapters.length,
-          itemBuilder: (context, i) => ListTile(
-            dense: true,
-            selected: i == _chapterIdx,
-            title: Text(_chapters[i].title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            onTap: () {
-              Navigator.pop(c);
-              _switchChapter(i);
-            },
+      builder: (c) {
+        drawerRoute = ModalRoute.of(c) as TransitionRoute<dynamic>?;
+        return SafeArea(
+          child: ListView.builder(
+            itemCount: _chapters.length,
+            itemBuilder: (context, i) => ListTile(
+              dense: true,
+              selected: i == _chapterIdx,
+              title: Text(_chapters[i].title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              onTap: () => Navigator.pop(c, i),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
+    await drawerRoute?.completed;
+    if (selected != null && mounted) await _switchChapter(selected);
   }
 
   void _showQueueSheet() {
@@ -1162,13 +1260,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final imagePath = live?.imagePath ?? b.imagePath;
     final error = live?.error ?? b.error;
     final prompt = live?.prompt ?? b.prompt;
-    final h = (fullWidth / b.aspect.clamp(0.2, 5.0)).clamp(60.0, _pageHeight - 12);
+    final h = ((fullWidth - 2 * _padH) / b.aspect.clamp(0.2, 5.0)).clamp(60.0, _pageHeight - 12);
     // 多版本：history（旧→新）+ 当前图；offset 0 = 最新一张。
     // DB 实时值优先（原始 JSON 需解码），排版缓存里已是解码后的列表。
     final List<String> hist;
     final l = live;
     if (l != null) {
-      hist = GenerationService.decodeHistory(l.history);
+      hist = _imageHistory(l);
     } else {
       hist = b.history;
     }
@@ -1219,6 +1317,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           },
           child: Image.file(
             File(shown ?? ''),
+            cacheWidth: ((fullWidth - 2 * _padH) * MediaQuery.devicePixelRatioOf(context)).ceil().clamp(1, 8192),
             fit: BoxFit.cover,
             errorBuilder: (_, _, _) => const Center(child: Icon(Icons.broken_image)),
           ),
@@ -1427,6 +1526,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     Widget content;
     if (_settings.pageMode == 'page') {
       content = PageView.builder(
+        key: ValueKey('chapter-pages-$_chapterLoadSeq'),
         controller: _pageCtrl,
         itemCount: _pages.length,
         onPageChanged: _onPageChanged,
@@ -1443,6 +1543,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         WidgetsBinding.instance.addPostFrameCallback((_) => _jumpTo(_curPage));
       }
       content = ListView.builder(
+        key: ValueKey('chapter-flow-$_chapterLoadSeq'),
         controller: ctrl,
         padding: const EdgeInsets.symmetric(horizontal: _padH, vertical: _padV),
         itemCount: _flowItems.length,
@@ -1454,6 +1555,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       );
     }
     return SelectionArea(
+      key: ValueKey('chapter-selection-$_chapterLoadSeq'),
       onSelectionChanged: (sel) => _selectionText = sel?.plainText ?? '',
       contextMenuBuilder: _selectionMenu,
       child: Stack(children: [
@@ -1482,36 +1584,42 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   Widget build(BuildContext context) {
     final ch = _chapter;
+    if (_loadError != null) {
+      return Scaffold(appBar: AppBar(title: const Text('阅读')), body: Center(child: Text(_loadError!)));
+    }
     if (_book == null || ch == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    final paras = ch.content.split('\n');
+    final paras = _paragraphs;
     return Scaffold(
       backgroundColor: context.readerBackground,
       body: StreamBuilder<List<Illustration>>(
         stream: _illsStream,
         builder: (context, illSnap) {
-          final ills = illSnap.data ?? const <Illustration>[];
+          final ills = (illSnap.data ?? const <Illustration>[])
+              .where((i) => i.chapterId == ch.id).toList();
           _illsById = {for (final i in ills) i.id: i};
+          _historyCache.removeWhere((id, _) => !_illsById.containsKey(id));
           return LayoutBuilder(builder: (context, cons) {
             final size = Size(
               cons.maxWidth - _padH * 2,
-              cons.maxHeight - _padV * 2,
+              cons.maxHeight - _padV * 2 - 72,
             );
             // 版面键只含影响布局的因素：段落内容 / 插图 id 与宽高 / 页面尺寸 / 字号行距。
             // 生成状态与进度变化不触发重排版（占位符内部自行刷新）。
-            final key = '${ch.id}|${ch.content.length}|'
-                '${ills.map((e) => '${e.id}:${e.imgWidth}x${e.imgHeight}').join(',')}'
+            final key = '${ch.id}|$_contentRevision|'
+                '${ills.map((e) => '${e.id}:${e.afterParagraph}:${e.anchorOffset}:${e.imgWidth}x${e.imgHeight}').join(',')}'
                 '|${size.width.toStringAsFixed(1)}x${size.height.toStringAsFixed(1)}'
                 '|${_settings.fontSize}|${_settings.lineHeight}';
-            if (key != _layoutKey && !_repaginating) {
+            if (key != _layoutKey) {
               _layoutKey = key;
-              Future.microtask(() => _recompute(paras, ills, size));
+              final seq = ++_repaginateSeq;
+              WidgetsBinding.instance.addPostFrameCallback((_) => _recompute(paras, ills, size, seq));
             }
             return Stack(children: [
               Column(children: [
                 _miniHeader(ch),
-                Expanded(child: _buildContent(_flowItems, size)),
+                Expanded(child: _buildContent(_flowItems, Size(cons.maxWidth, size.height))),
                 _miniFooter(),
               ]),
               _overlayTop(),
@@ -1696,14 +1804,15 @@ class _ImageManagerSheetState extends State<_ImageManagerSheet> {
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(10),
                             child: Stack(fit: StackFit.expand, children: [
-                              Image.file(
+                              LayoutBuilder(builder: (context, constraints) => Image.file(
                                 File(it.path),
+                                cacheWidth: (constraints.maxWidth * MediaQuery.devicePixelRatioOf(context)).ceil().clamp(1, 8192),
                                 fit: BoxFit.cover,
                                 errorBuilder: (_, _, _) => Container(
                                   color: scheme.surfaceContainerHighest,
                                   child: const Center(child: Icon(Icons.broken_image)),
                                 ),
-                              ),
+                              )),
                               Positioned(
                                 left: 0, right: 0, bottom: 0,
                                 child: Container(

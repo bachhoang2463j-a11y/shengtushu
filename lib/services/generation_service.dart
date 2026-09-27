@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart';
 import '../data/database.dart';
 import 'comfyui_client.dart';
 import 'image_store.dart';
+import 'library_activity.dart';
 import 'llm_client.dart';
 import 'prompt_service.dart';
 import 'settings_service.dart';
@@ -80,7 +81,7 @@ class GenerationService extends ChangeNotifier {
     required int firstParagraphIndex, // 页首段落在本章中的序号（0-based）
     required List<String> history, // 前 N 段
     int anchorOffset = -1, // 插图锚点：段内字符偏移（-1 = 段末）
-  }) async {
+  }) => LibraryActivity.instance.write(() async {
     // ---- 预校验：任何一步不满足立即抛明确错误，不让用户面对"无反应" ----
     await _precheck();
 
@@ -111,7 +112,7 @@ class GenerationService extends ChangeNotifier {
       throw const GenerationException('LLM 未返回有效插图位置');
     }
     return created;
-  }
+  });
 
   /// 定位选区末尾（忽略空白差异）：返回 (段落序号, 段内字符偏移)。
   /// 偏移含义：插图插在该段第 offset 个字符之后；找不到返回 (-1, -1)。
@@ -277,7 +278,7 @@ class GenerationService extends ChangeNotifier {
         final next = queue.indexWhere((t) => t.status == 'queued');
         if (next < 0) break;
         final task = queue[next];
-        await _runTask(task);
+        await LibraryActivity.instance.write(() => _runTask(task));
       }
     } finally {
       _running = false;
@@ -424,6 +425,7 @@ class GenerationService extends ChangeNotifier {
 
   /// 手动重试失败任务
   void retryFailed() {
+    if (LibraryActivity.instance.isTransferring) return;
     var any = false;
     for (final t in queue) {
       if (t.status == 'failed') {
@@ -440,17 +442,17 @@ class GenerationService extends ChangeNotifier {
   }
 
   /// 重试单个失败插图（按数据库 id）；[useSecond] 为 true 时用第二工作流
-  Future<void> retryOne(int illustrationId, {bool useSecond = false}) async {
+  Future<void> retryOne(int illustrationId, {bool useSecond = false}) => LibraryActivity.instance.write(() async {
     final db = _requireDb();
     await (db.update(db.illustrations)..where((t) => t.id.equals(illustrationId)))
         .write(const IllustrationsCompanion(status: Value('pending'), error: Value('')));
     _ensureQueued(illustrationId, useSecond: useSecond);
     notifyListeners();
     if (!_running) _drain();
-  }
+  });
 
   /// 修改提示词并重新生图
-  Future<void> updatePromptAndRegenerate(int illustrationId, String prompt) async {
+  Future<void> updatePromptAndRegenerate(int illustrationId, String prompt) => LibraryActivity.instance.write(() async {
     final db = _requireDb();
     await (db.update(db.illustrations)..where((t) => t.id.equals(illustrationId))).write(
       IllustrationsCompanion(
@@ -462,14 +464,14 @@ class GenerationService extends ChangeNotifier {
     _ensureQueued(illustrationId, promptPreview: _preview(prompt));
     notifyListeners();
     if (!_running) _drain();
-  }
+  });
 
   /// 仅重新生图（保持原提示词）；[useSecond] 为 true 时用第二工作流（图片 ↻2 入口）
   Future<void> regenerate(int illustrationId, {bool useSecond = false}) =>
       retryOne(illustrationId, useSecond: useSecond);
 
   /// 删除插图（含当前图与全部历史版本图片）
-  Future<void> deleteIllustration(int illustrationId) async {
+  Future<void> deleteIllustration(int illustrationId) => LibraryActivity.instance.write(() async {
     final db = _requireDb();
     final rows = await (db.select(db.illustrations)..where((t) => t.id.equals(illustrationId))).get();
     for (final ill in rows) {
@@ -487,11 +489,11 @@ class GenerationService extends ChangeNotifier {
     await (db.delete(db.illustrations)..where((t) => t.id.equals(illustrationId))).go();
     queue.removeWhere((t) => t.illustrationId == illustrationId);
     notifyListeners();
-  }
+  });
 
   /// 批量删除指定插图的若干张图片（当前图或历史图），用于图片管理的多选删除。
   /// 当前图被删时提升最近一张历史为当前图；没有历史则回到「待生成」。
-  Future<void> deleteIllustrationImages(Map<int, List<String>> byIll) async {
+  Future<void> deleteIllustrationImages(Map<int, List<String>> byIll) => LibraryActivity.instance.write(() async {
     final db = _requireDb();
     for (final entry in byIll.entries) {
       final ill = await (db.select(db.illustrations)..where((t) => t.id.equals(entry.key)))
@@ -527,11 +529,11 @@ class GenerationService extends ChangeNotifier {
       }
     }
     notifyListeners();
-  }
+  });
 
   /// 压缩一本书全部插图中的 PNG 为 WebP（当前图与历史版本一起处理）。
   /// 返回节省的总字节数；单张失败自动跳过保留原样。
-  Future<int> compressBookImages(int bookId) async {
+  Future<int> compressBookImages(int bookId) => LibraryActivity.instance.write(() async {
     final db = _requireDb();
     final rows = await (db.select(db.illustrations)..where((t) => t.bookId.equals(bookId))).get();
     var saved = 0;
@@ -569,7 +571,7 @@ class GenerationService extends ChangeNotifier {
     }
     notifyListeners();
     return saved;
-  }
+  });
 
   /// 单张 PNG → WebP；成功返回 (新路径, 节省字节)，失败/不划算返回 null
   Future<(String, int)?> _compressOnePng(String p) async {
