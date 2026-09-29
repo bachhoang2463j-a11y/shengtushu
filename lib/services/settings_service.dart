@@ -45,6 +45,39 @@ class PersonaPreset {
     name: j['name'] ?? '', tags: j['tags'] ?? '', enabled: j['enabled'] ?? false);
 }
 
+/// LLM 预设：一套连接配置的命名快照（应用 = 拷回 llm 配置）
+class LlmPreset {
+  String id;
+  String name;
+  LlmConfig llm;
+  LlmPreset({required this.id, required this.name, required this.llm});
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'llm': llm.toJson()};
+  factory LlmPreset.fromJson(Map<String, dynamic> j) => LlmPreset(
+    id: j['id'] ?? '',
+    name: j['name'] ?? '',
+    llm: LlmConfig.fromJson((j['llm'] as Map<String, dynamic>?) ?? const {}),
+  );
+}
+
+/// 生词模板预设：画风文本 + 绑定的 ComfyUI 工作流（null = 不绑定，应用时不动工作流）
+class StylePreset {
+  String id;
+  String name;
+  String styleText;
+  int? workflowId;
+  StylePreset({required this.id, required this.name, this.styleText = '', this.workflowId});
+
+  Map<String, dynamic> toJson() =>
+      {'id': id, 'name': name, 'styleText': styleText, 'workflowId': workflowId};
+  factory StylePreset.fromJson(Map<String, dynamic> j) => StylePreset(
+    id: j['id'] ?? '',
+    name: j['name'] ?? '',
+    styleText: j['styleText'] ?? '',
+    workflowId: j['workflowId'] as int?,
+  );
+}
+
 /// 一条模板消息（多消息模板，占位符语法移植自生图助手脚本）
 class TplMessage {
   String role; // system | user | assistant
@@ -222,6 +255,34 @@ class SettingsService extends ChangeNotifier {
   }
   Future<void> setPersonas(List<PersonaPreset> list) =>
       _set('personas', jsonEncode(list.map((p) => p.toJson()).toList()));
+
+  // ---------- LLM 预设（多套连接配置快照，应用 = 拷回 llm）----------
+  List<LlmPreset> get llmPresets {
+    final raw = _get('llmPresets', '[]');
+    try {
+      return (jsonDecode(raw) as List)
+          .map((e) => LlmPreset.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+  Future<void> setLlmPresets(List<LlmPreset> list) =>
+      _set('llmPresets', jsonEncode(list.map((p) => p.toJson()).toList()));
+
+  // ---------- 生词模板预设（画风文本 + 绑定工作流，应用 = 拷回 styleText + 激活工作流）----------
+  List<StylePreset> get stylePresets {
+    final raw = _get('stylePresets', '[]');
+    try {
+      return (jsonDecode(raw) as List)
+          .map((e) => StylePreset.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+  Future<void> setStylePresets(List<StylePreset> list) =>
+      _set('stylePresets', jsonEncode(list.map((p) => p.toJson()).toList()));
 
   // ---------- 朗读（TTS） ----------
   TtsConfig get tts {

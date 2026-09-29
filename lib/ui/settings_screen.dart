@@ -64,6 +64,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _s = SettingsService.instance;
   final _comfy = ComfyUIClient();
   String? _testResult;
+  int? _activeWfId; // 当前激活（第一）工作流 id，生词模板预设匹配/快照用
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshActiveWorkflow();
+  }
+
+  Future<void> _refreshActiveWorkflow() async {
+    final rows = await (widget.db.select(widget.db.workflows)
+          ..where((t) => t.isActive.equals(true)))
+        .get();
+    _activeWfId = rows.isEmpty ? null : rows.first.id;
+    if (mounted) setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -172,6 +187,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           const SectionHeader(title: 'LLM（OpenAI 兼容）'),
+          SettingRow(
+            title: 'LLM 预设',
+            subtitle: _llmPresetRowSubtitle(),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _showLlmPresetSheet(),
+          ),
           SettingRow(
             title: 'API 地址',
             subtitle: _s.llm.baseUrl,
@@ -359,6 +380,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 MaterialPageRoute(builder: (_) => TemplateEditorScreen(db: widget.db))),
           ),
           SettingRow(
+            title: '生词模板预设',
+            subtitle: _stylePresetRowSubtitle(),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _showStylePresetSheet(),
+          ),
+          SettingRow(
             title: '生词模版（文风/画质要求）',
             subtitle: _s.styleText.split('\n').first,
             onTap: () async {
@@ -379,10 +406,336 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: 'ComfyUI 工作流管理',
             subtitle: '导入 API 格式 JSON 并标记提示词/尺寸/种子节点',
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => WorkflowManagerScreen(db: widget.db))),
+            onTap: () async {
+              await Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => WorkflowManagerScreen(db: widget.db)));
+              _refreshActiveWorkflow();
+            },
           ),
         ],
+      ),
+    );
+  }
+
+  // ---------- 预设切换（LLM / 生词模板） ----------
+
+  String _newPresetId() => DateTime.now().microsecondsSinceEpoch.toString();
+
+  bool _llmEquals(LlmConfig a, LlmConfig b) =>
+      jsonEncode(a.toJson()) == jsonEncode(b.toJson());
+
+  LlmPreset? _matchedLlmPreset() {
+    final cur = jsonEncode(_s.llm.toJson());
+    for (final p in _s.llmPresets) {
+      if (jsonEncode(p.llm.toJson()) == cur) return p;
+    }
+    return null;
+  }
+
+  StylePreset? _matchedStylePreset() {
+    for (final p in _s.stylePresets) {
+      if (p.styleText == _s.styleText && p.workflowId == _activeWfId) return p;
+    }
+    return null;
+  }
+
+  String _firstLine(String s, [int max = 16]) {
+    final first = s.split('\n').first;
+    return first.length <= max ? first : '${first.substring(0, max)}…';
+  }
+
+  String _llmPresetRowSubtitle() {
+    final matched = _matchedLlmPreset();
+    final model = _s.llm.model;
+    return matched == null ? '自定义 · $model' : '${matched.name} · $model';
+  }
+
+  String _stylePresetRowSubtitle() {
+    final matched = _matchedStylePreset();
+    final text = _firstLine(_s.styleText);
+    return matched == null ? '自定义 · $text' : '${matched.name} · $text';
+  }
+
+  /// 当前配置不匹配任何预设时，切换前的防丢失确认
+  Future<bool> _confirmPresetSwitch() async {
+    final res = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('切换预设'),
+        content: const Text(
+            '当前配置尚未保存到任何预设，切换后将丢失。\n可先取消，用底部「将当前配置保存为新预设」留存。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('仍要切换')),
+        ],
+      ),
+    );
+    return res ?? false;
+  }
+
+  Future<void> _showLlmPresetSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheet) {
+          final presets = _s.llmPresets;
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('LLM 预设',
+                        style: Theme.of(sheetCtx).textTheme.titleMedium),
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      if (presets.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Text(
+                              '暂无预设。在下方填好 API 地址 / Key / 模型后，点「将当前配置保存为新预设」留存。',
+                              style: TextStyle(fontSize: 12)),
+                        ),
+                      for (final p in presets)
+                        ListTile(
+                          leading: _llmEquals(p.llm, _s.llm)
+                              ? Icon(Icons.check_circle,
+                                  color: Theme.of(sheetCtx).colorScheme.primary)
+                              : const Icon(Icons.radio_button_unchecked),
+                          title: Text(p.name),
+                          subtitle: Text('${p.llm.model} · ${p.llm.baseUrl}',
+                              style: const TextStyle(fontSize: 12)),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (v) async {
+                              if (v == 'delete') {
+                                final ok = await showDialog<bool>(
+                                  context: sheetCtx,
+                                  builder: (c) => AlertDialog(
+                                    title: Text('删除「${p.name}」？'),
+                                    actions: [
+                                      TextButton(
+                                          onPressed: () => Navigator.pop(c, false),
+                                          child: const Text('取消')),
+                                      FilledButton(
+                                          onPressed: () => Navigator.pop(c, true),
+                                          child: const Text('删除')),
+                                    ],
+                                  ),
+                                );
+                                if (ok != true) return;
+                              }
+                              final list = _s.llmPresets;
+                              if (v == 'update') {
+                                for (final e in list) {
+                                  if (e.id == p.id) e.llm = _s.llm;
+                                }
+                                await _s.setLlmPresets(list);
+                              } else if (v == 'rename') {
+                                if (!sheetCtx.mounted) return;
+                                final name = await textInputDialog(sheetCtx,
+                                    title: '重命名预设', initial: p.name);
+                                if (name != null && name.trim().isNotEmpty) {
+                                  for (final e in list) {
+                                    if (e.id == p.id) e.name = name.trim();
+                                  }
+                                  await _s.setLlmPresets(list);
+                                }
+                              } else if (v == 'delete') {
+                                list.removeWhere((e) => e.id == p.id);
+                                await _s.setLlmPresets(list);
+                              }
+                              setSheet(() {});
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(value: 'update', child: Text('更新为当前配置')),
+                              PopupMenuItem(value: 'rename', child: Text('重命名')),
+                              PopupMenuItem(value: 'delete', child: Text('删除')),
+                            ],
+                          ),
+                          onTap: () async {
+                            if (!_llmEquals(p.llm, _s.llm) && _matchedLlmPreset() == null) {
+                              if (!await _confirmPresetSwitch()) return;
+                            }
+                            await _s.setLlm(p.llm);
+                            if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.add),
+                  title: const Text('将当前配置保存为新预设'),
+                  onTap: () async {
+                    final name =
+                        await textInputDialog(sheetCtx, title: '预设名称', hint: '如：DeepSeek 正式');
+                    if (name == null || name.trim().isEmpty) return;
+                    final list = _s.llmPresets
+                      ..add(LlmPreset(id: _newPresetId(), name: name.trim(), llm: _s.llm));
+                    await _s.setLlmPresets(list);
+                    setSheet(() {});
+                  },
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _showStylePresetSheet() async {
+    final wfs = await widget.db.select(widget.db.workflows).get();
+    if (!mounted) return;
+    final wfById = {for (final w in wfs) w.id: w};
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheet) {
+          final presets = _s.stylePresets;
+          String summary(StylePreset p) {
+            final wf = p.workflowId == null
+                ? '未绑定工作流'
+                : (wfById[p.workflowId]?.name ?? '工作流已删除');
+            return '${_firstLine(p.styleText, 20)} · $wf';
+          }
+
+          return SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('生词模板预设（切换时同步切换绑定的 ComfyUI 工作流）',
+                        style: Theme.of(sheetCtx).textTheme.titleMedium),
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      if (presets.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Text(
+                              '暂无预设。选好工作流并填好生词模版后，点「将当前配置保存为新预设」留存。',
+                              style: TextStyle(fontSize: 12)),
+                        ),
+                      for (final p in presets)
+                        ListTile(
+                          leading: (p.styleText == _s.styleText && p.workflowId == _activeWfId)
+                              ? Icon(Icons.check_circle,
+                                  color: Theme.of(sheetCtx).colorScheme.primary)
+                              : const Icon(Icons.radio_button_unchecked),
+                          title: Text(p.name),
+                          subtitle: Text(summary(p), style: const TextStyle(fontSize: 12)),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (v) async {
+                              if (v == 'delete') {
+                                final ok = await showDialog<bool>(
+                                  context: sheetCtx,
+                                  builder: (c) => AlertDialog(
+                                    title: Text('删除「${p.name}」？'),
+                                    actions: [
+                                      TextButton(
+                                          onPressed: () => Navigator.pop(c, false),
+                                          child: const Text('取消')),
+                                      FilledButton(
+                                          onPressed: () => Navigator.pop(c, true),
+                                          child: const Text('删除')),
+                                    ],
+                                  ),
+                                );
+                                if (ok != true) return;
+                              }
+                              final list = _s.stylePresets;
+                              if (v == 'update') {
+                                for (final e in list) {
+                                  if (e.id == p.id) {
+                                    e.styleText = _s.styleText;
+                                    e.workflowId = _activeWfId;
+                                  }
+                                }
+                                await _s.setStylePresets(list);
+                              } else if (v == 'rename') {
+                                if (!sheetCtx.mounted) return;
+                                final name = await textInputDialog(sheetCtx,
+                                    title: '重命名预设', initial: p.name);
+                                if (name != null && name.trim().isNotEmpty) {
+                                  for (final e in list) {
+                                    if (e.id == p.id) e.name = name.trim();
+                                  }
+                                  await _s.setStylePresets(list);
+                                }
+                              } else if (v == 'delete') {
+                                list.removeWhere((e) => e.id == p.id);
+                                await _s.setStylePresets(list);
+                              }
+                              setSheet(() {});
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(value: 'update', child: Text('更新为当前配置')),
+                              PopupMenuItem(value: 'rename', child: Text('重命名')),
+                              PopupMenuItem(value: 'delete', child: Text('删除')),
+                            ],
+                          ),
+                          onTap: () async {
+                            final isCurrent =
+                                p.styleText == _s.styleText && p.workflowId == _activeWfId;
+                            if (!isCurrent && _matchedStylePreset() == null) {
+                              if (!await _confirmPresetSwitch()) return;
+                            }
+                            await _s.setStyleText(p.styleText);
+                            if (p.workflowId != null && wfById.containsKey(p.workflowId)) {
+                              await widget.db
+                                  .update(widget.db.workflows)
+                                  .write(const WorkflowsCompanion(isActive: Value(false)));
+                              await (widget.db.update(widget.db.workflows)
+                                    ..where((t) => t.id.equals(p.workflowId!)))
+                                  .write(const WorkflowsCompanion(isActive: Value(true)));
+                              _activeWfId = p.workflowId;
+                            }
+                            if (sheetCtx.mounted) Navigator.pop(sheetCtx);
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.add),
+                  title: const Text('将当前配置保存为新预设'),
+                  subtitle: Text(_activeWfId == null
+                      ? '当前未激活工作流（预设将不绑定）'
+                      : '绑定当前工作流：${wfById[_activeWfId]?.name ?? _activeWfId}',
+                      style: const TextStyle(fontSize: 12)),
+                  onTap: () async {
+                    final name =
+                        await textInputDialog(sheetCtx, title: '预设名称', hint: '如：动漫风 · Z-Image');
+                    if (name == null || name.trim().isEmpty) return;
+                    final list = _s.stylePresets
+                      ..add(StylePreset(
+                          id: _newPresetId(),
+                          name: name.trim(),
+                          styleText: _s.styleText,
+                          workflowId: _activeWfId));
+                    await _s.setStylePresets(list);
+                    setSheet(() {});
+                  },
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
