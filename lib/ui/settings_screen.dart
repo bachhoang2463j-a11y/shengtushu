@@ -704,6 +704,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   .write(const WorkflowsCompanion(isActive: Value(true)));
                               _activeWfId = p.workflowId;
                             }
+                            // 工作流激活是裸 DB 写入不触发 notifyListeners，手动刷副标题
+                            if (mounted) setState(() {});
                             if (sheetCtx.mounted) Navigator.pop(sheetCtx);
                           },
                         ),
